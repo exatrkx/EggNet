@@ -1,0 +1,66 @@
+base_model: NodeEncoding
+model: EggNet
+loss: contrastive
+dataset: GraphDataset
+input_dir: /global/cfs/cdirs/m2616/data/GNN4ITK/trackml_gnnml_feature_store
+output_dir: /global/cfs/cdirs/m2616/data/GNN4ITK/trackml_gnnml
+project: eggnet_trackml # Used in logging
+accelerator: cuda
+devices: 4
+num_nodes: 1
+precision: 16
+
+# Dataset parameters
+data_split: [2000, 400, 200] # Number of [training, validation, testing] examples
+
+weighting:
+  true_default: 1.
+  fake_default: 1.
+
+# A list of hard cut conditions. Any hits not passing these conditions will be removed from the training and validation dataset.
+# By definition, noise will not pass any of these cuts, so any hard cuts will remove noise.
+hard_cuts:
+  hit_particle_pt: [1, .inf]
+
+# Model parameters
+node_features: [hit_r, hit_phi, hit_z,   hit_cell_count, hit_cell_val, hit_leta, hit_lphi, hit_lx, hit_ly, hit_lz, hit_geta, hit_gphi]
+node_scales:   [1000,  3.14,    1000,    1,              1,            1,        1,        0.1,    1,      0.1,    1,        3.14]
+
+node_hidden: 128
+edge_hidden: 128
+node_0_hidden: 128
+encoder_hidden: 128
+decoder_hiden: 128
+node_rep_dim: 128
+edge_rep_dim: 128
+node_pspace_dim: 24
+n_encoder_layers: 3
+n_node_0_layers: 3
+n_edge_layers: 3
+n_node_layers: 3
+n_decoder_layers: 1
+hidden_activation: SiLU
+output_activation: Tanh
+layernorm: True
+batchnorm: False
+embedding_norm: True
+n_iters: 4
+n_gnns_per_iter: 8
+recurrent: True
+recurrent_gnn: False
+knn_train: 10
+randomisation: 100000
+knn_loss: 10
+knn_val: 10
+margin: 1
+knn_algorithm: cu_knn
+
+# Training parameters
+warmup: 10
+lr: 0.0002 #0.0008
+factor: 0.8
+patience: 20
+max_epochs: 200
+metric_to_monitor: val_eff
+metric_mode: max
+# num_workers: [0, 0, 0]

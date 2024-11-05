@@ -1,0 +1,9 @@
+target_tracks:
+  hit_particle_pt: [1, .inf]
+  hit_particle_nhits: [3, .inf]
+
+trackML_data: True
+pT_unit: GeV
+plot_eta: False
+
+eps: 0.1
