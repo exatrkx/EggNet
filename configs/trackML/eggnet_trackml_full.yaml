@@ -19,8 +19,8 @@ weighting:
 
 # A list of hard cut conditions. Any hits not passing these conditions will be removed from the training and validation dataset.
 # By definition, noise will not pass any of these cuts, so any hard cuts will remove noise.
-hard_cuts:
-  hit_particle_pt: [1, .inf]
+# hard_cuts:
+#   hit_particle_pt: [1, .inf]
 
 # Model parameters
 node_features: [hit_r, hit_phi, hit_z,   hit_cell_count, hit_cell_val, hit_leta, hit_lphi, hit_lx, hit_ly, hit_lz, hit_geta, hit_gphi]
@@ -63,4 +63,5 @@ patience: 20
 max_epochs: 200
 metric_to_monitor: val_eff
 metric_mode: max
+checkpoint: True
 # num_workers: [0, 0, 0]
