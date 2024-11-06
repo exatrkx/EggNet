@@ -30,13 +30,13 @@ def train(**kwargs):
 @cli.command()
 @click.argument("config_file")
 @click.option(
-    "--checkpoint", "-c", required=True, help="Checkpoint to use for training"
+    "--checkpoint", "-c", required=True, help="Checkpoint to use for inference"
 )
-@click.option("--output_dir", "-o", default=None, help="Directory to save the output pyg files. Default to the same output dir if not specified.")
-@click.option("--datasets", "-d", default=None, multiple=True)
-@click.option("--accelerator", "-a", default=None)
-@click.option("--devices", "-dv", default=None, type=int)
-@click.option("--num_nodes", "-n", default=None, type=int)
+@click.option("--output_dir", "-o", default=None, help="Directory to save the output pyg files. Default to the same output_dir as in training_config if not specified.")
+@click.option("--datasets", "-d", default=None, multiple=True, type=click.Choice(["trainset", "valset", "testset"]), help="Which dataset to run inference. Default is all datasets. Can specify one dataset or multiple.")
+@click.option("--accelerator", "-a", default=None, type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default will be what is specified in the training config.")
+@click.option("--devices", "-dv", default=None, type=int, help="Number of devices. Default will be what is specified in the training config.")
+@click.option("--num_nodes", "-n", default=None, type=int, help="Number of nodes. Default will be what is specified in the training config.")
 def infer(**kwargs):
     return infer_stage.infer(**kwargs)
 
@@ -44,9 +44,9 @@ def infer(**kwargs):
 @cli.command()
 @click.argument("config_file")
 @click.argument("eval_config_file")
-@click.option("--output_dir", "-o", default=None, help="Directory to save the output pyg files. Default to the same output dir if not specified.")
-@click.option("--accelerator", "-a", default="cuda")
-@click.option("--dataset", "-d", default="valset")
+@click.option("--output_dir", "-o", default=None, help="Directory with the inference data and where to save the evaluation plots. Default to the same output_dir as in training_config if not specified.")
+@click.option("--accelerator", "-a", default="cpu", type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default is cpu")
+@click.option("--dataset", "-d", default="valset", type=click.Choice(["trainset", "valset", "testset"]), help="Specify a dataset to run inference. Default is valset.")
 def eval(**kwargs):
     return eval_stage.eval(**kwargs)
 
