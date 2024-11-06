@@ -25,8 +25,5 @@ setup(
         "graph networks",
         "machine learning",
     ],
-    # package_dir={'': 'src'},
-    # packages=['eggnet'],
-    # url="https://gitlab.cern.ch/gnn4itkteam/acorn",
-    # scripts=["scripts/train.py", "scripts/infer.py", "scripts/eval.py"],
+    url="https://github.com/exatrkx/EggNet",
 )
