@@ -4,6 +4,7 @@ Graph-based Graph Attention Network for End-to-end Particle Track Reconstruction
 This is the repository to reproduce the EggNet results presented in:
 - ICML AI4Science Workshop: https://arxiv.org/abs/2407.13925
 - CHEP 2024: https://indico.cern.ch/event/1338689/contributions/6010085/
+
 A large fraction of the codes in this respository is based on the Acorn framework (https://gitlab.cern.ch/gnn4itkteam/acorn). Any questions or bug reports please contact Jay Chan (jaychan@lbl.gov).
 
 
