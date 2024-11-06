@@ -7,6 +7,10 @@ from eggnet.utils.timing import time_function
 
 
 def cu_knn_graph(x, k, loop=False, cosine=False, r=None):
+    """
+    An function equivalent to knn_graph but based on cuml.neighbors.NearestNeighbors with GPU implementation.
+    In addition, the function supports specification of a max radius (the radius cut is applied after k neighbors are found).
+    """
     if not loop:
         k += 1
     with cupy.cuda.Device(x.device.index):
@@ -33,6 +37,9 @@ def cu_knn_graph(x, k, loop=False, cosine=False, r=None):
 
 @time_function
 def get_knn_graph(batch, k, r=None, algorithm="cu_knn", node_filter=False):
+    """
+    Get nearest neighbor edge list depending on which algorithm to use.
+    """
 
     if algorithm == "cu_knn":
         edges = cu_knn_graph(batch.hit_embedding.detach(), k=k, cosine=False, loop=False, r=r)

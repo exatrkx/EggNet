@@ -9,6 +9,10 @@ from eggnet.utils.timing import time_function
 
 @time_function
 def cluster(event, eps, min_samples):
+    """
+    Perform clustering (currently only DBSCAN is supported).
+    A track label for each hit will be written to the pyg object.
+    """
 
     clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
     # clusterer = cuml.cluster.hdbscan.HDBSCAN(min_cluster_size=3, allow_single_cluster=True, cluster_selection_epsilon=0)
@@ -17,6 +21,9 @@ def cluster(event, eps, min_samples):
 
 
 def cluster_and_match(event, eps, eval_config, time_yes=False):
+    """
+    Perform clustering for the given event and calculate the matched tracks information.
+    """
 
     if eval_config.get("pT_unit", "MeV") == "MeV":
         pt_min, pt_max = 1000, 50000

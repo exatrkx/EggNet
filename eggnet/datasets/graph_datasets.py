@@ -51,7 +51,6 @@ class GraphDataset(Dataset):
 
         infer_num_nodes(event)
         apply_hard_cuts(event, self.hparams, self.stage)
-        # self.remove_split_cluster_truth(event) TODO: Should handle this at some point
         if self.stage != "test":
             self.scale_features(event)
         if "hit_module_index" in event.keys():

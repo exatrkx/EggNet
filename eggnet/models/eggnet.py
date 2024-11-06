@@ -129,6 +129,9 @@ class EggNet(nn.Module):
         # ppe.cuda.use_torch_mempool_in_cupy()
 
     def build_edges(self, batch, x, i, time_yes=False):
+        """
+        Get the hit embedding with decodder and obtain KNN edges.
+        """
         x = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
         if self.hparams["embedding_norm"]:
             batch.hit_embedding = F.normalize(x)

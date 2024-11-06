@@ -10,7 +10,7 @@ def hinge_loss(
     y=None,
     w=None,
     node_filter=False,
-    weighting_config=None,  # self.hparams["weighting"]
+    weighting_config=None,
 ):
     if y is None:
         y = get_target(edges, batch.hit_particle_id)

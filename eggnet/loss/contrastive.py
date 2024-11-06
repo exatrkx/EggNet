@@ -5,6 +5,9 @@ from eggnet.utils.timing import time_function
 
 
 class contrastive(nn.Module):
+    """
+    Naive contrastive loss
+    """
     def __init__(self, hparams):
         super().__init__()
 

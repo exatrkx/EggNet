@@ -5,6 +5,9 @@ from torch_scatter import scatter
 
 
 def get_target(edges, hit_particle_id):
+    """
+    Return truth labels for all edges.
+    """
     y = torch.ones(edges.shape[1], device=edges.device) * (-1)
     y[
         (hit_particle_id[edges[0]] == hit_particle_id[edges[1]])
@@ -13,7 +16,10 @@ def get_target(edges, hit_particle_id):
     return y
 
 
-def get_weight(batch, edges, y, weighting_config):  # self.hparams["weighting"]
+def get_weight(batch, edges, y, weighting_config):
+    """
+    Return edge weights based on the specified weighting configuration.
+    """
     w = torch.ones(edges.shape[1], device=edges.device)
     if not weighting_config:
         return w
@@ -72,6 +78,10 @@ def get_condition_lambda(condition_key, condition_val):
 
 
 def get_edge_target_mask(event, edges, target_tracks=None, y=None):
+    """
+    Get the masking for the target edges (edges associated with target particles).
+    target_tracks is the config specifying the selections of target particles.
+    """
     if y is None:
         graph_mask = torch.ones_like(edges[0], dtype=torch.bool)
     else:
@@ -87,6 +97,10 @@ def get_edge_target_mask(event, edges, target_tracks=None, y=None):
 
 
 def get_node_target_mask(event, target_tracks=None):
+    """
+    Get the masking for the target hits (hits associated with target particles).
+    target_tracks is the config specifying the selections of target particles.
+    """
     graph_mask = event.hit_particle_id != 0
 
     if target_tracks:
@@ -106,6 +120,11 @@ def get_number_of_true_edges(
     upper_bound=None,
     weighting_config=None,
 ):
+    """
+    Get the number of true edges for each node. Can sum them up if reduction is sum.
+    Can also return the upper bound of the number of true edges one can possibly reconstruct with a KNN (if upper_bound is given).
+    Can calculate only for the target particles. Target particles can be specified based on weighting config ("weight-based"), or selections ("mask-based").
+    """
     if target is None:
         signal_mask = torch.ones_like(batch.hit_particle_nhits, dtype=torch.bool)
     elif target == "weight-based":

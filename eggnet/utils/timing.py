@@ -2,6 +2,10 @@ import time
 
 
 def time_function(f):
+    """
+    Decoration function to evaluate timing of a function.
+    The function to decorate is required to take either 'batch', 'event' or 'graph' as a positional argument.
+    """
 
     if "batch" in f.__code__.co_varnames:
         index = f.__code__.co_varnames.index("batch")
