@@ -6,9 +6,14 @@ import pandas as pd
 from eggnet import lightning_modules
 from eggnet.utils.cluster import cluster_and_match
 from eggnet.utils.plotting import plot_eff_vs_eps, plot_eff_fixed_eps, plot_computing_time
+from eggnet.utils.slurm import submit_to_slurm
 
 
-def eval(config_file, eval_config_file, output_dir, accelerator, dataset):
+def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm):
+
+    if slurm:
+        eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset)
+        return
 
     with open(config_file, "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
@@ -88,3 +93,15 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset):
     if eval_config.get("plot_eta", True):
         plot_eff_fixed_eps(matched_target_particles_eta_hist, particles_eta_hist, eps_data, eval_config, eta_bins, r"$\eta$", logx=False, filename="track_efficiency_eta.png")
     plot_computing_time(time_data, eval_config)
+
+
+def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset):
+
+    command = (
+        (f"eggnet eval {config_file} {eval_config_file}") +
+        (f" --output_dir {output_dir}" if output_dir else "") +
+        (f" --accelerator {accelerator}" if accelerator else "") +
+        (f" --dataset {dataset}" if dataset else "")
+    )
+
+    submit_to_slurm(command, accelerator, 1, 1, gpu_memory=40)

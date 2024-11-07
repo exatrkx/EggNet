@@ -41,6 +41,7 @@ Options:
                                 checkpoint
   --load_only_model_parameters  Load only model parameters from checkpoint
                                 instead of the full training states
+  -s, --slurm                   Submit to slurm batch.
   --help                        Show this message and exit.
 ```
 
@@ -58,7 +59,7 @@ Options:
   -o, --output_dir TEXT           Directory to save the output pyg files.
                                   Default to the same output_dir as in
                                   training_config if not specified.
-  -d, --datasets [trainset|valset|testset]
+  -d, --dataset [trainset|valset|testset]
                                   Which dataset to run inference. Default is
                                   all datasets. Can specify one dataset or
                                   multiple.
@@ -68,6 +69,7 @@ Options:
                                   specified in the training config.
   -n, --num_nodes INTEGER         Number of nodes. Default will be what is
                                   specified in the training config.
+  -s, --slurm                   Submit to slurm batch.
   --help                          Show this message and exit.
 ```
 Note that here `TRAINING_CONFIG` should be exactly the same as what was used for the training. The data with the inference results (i.e. node embedding) will be saved to the `output_dir`.
@@ -88,6 +90,11 @@ Options:
   -d, --dataset [trainset|valset|testset]
                                   Specify a dataset to run inference. Default
                                   is valset.
+  -s, --slurm                   Submit to slurm batch.
   --help                          Show this message and exit.
 ```
 The evaluation will run the clustering on the node embedding and calculate track efficiency, fake rate and duplication rate. It will also evaluate inferece time. Results are saved to the same output_dir where the inference data are stored.
+
+## Slurm batch
+
+The program also supports slurm batch submission. Simply pass `-s` or `--slurm` to your command line. Before submitting to batch, edit the `.env` to set the correct project ID for your batch job (default is `m2616`).

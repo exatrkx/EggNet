@@ -15,3 +15,4 @@ cudf-cu12
 cugraph-cu12
 cuml-cu12
 wandb
+python-dotenv
