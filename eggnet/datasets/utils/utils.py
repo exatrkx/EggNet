@@ -103,7 +103,7 @@ def handle_hard_node_cuts(
     for feature in event.keys():
         if (
             isinstance(event[feature], torch.Tensor)
-            and get_variable_type(feature) == "track-like"
+            and get_variable_type(feature) == VariableType.TRACK_LIKE
         ):
             event[feature] = event[feature][..., track_mask]
 

@@ -40,4 +40,4 @@ class contrastive(nn.Module):
         )
         loss = signal_ls + knn_ls + random_ls
 
-        return loss
+        return loss, signal_ls, knn_ls, random_ls

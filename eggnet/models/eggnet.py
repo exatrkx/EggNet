@@ -1,5 +1,3 @@
-import time
-
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import softmax
@@ -132,9 +130,9 @@ class EggNet(nn.Module):
         """
         Get the hit embedding with decodder and obtain KNN edges.
         """
-        x = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
+        batch.hit_embedding = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
         if self.hparams["embedding_norm"]:
-            batch.hit_embedding = F.normalize(x)
+            batch.hit_embedding = F.normalize(batch.hit_embedding)
 
         k = (
             self.hparams["knn_train"]

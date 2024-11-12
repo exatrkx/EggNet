@@ -42,10 +42,10 @@ def get_knn_graph(batch, k, r=None, algorithm="cu_knn", node_filter=False):
     """
 
     if algorithm == "cu_knn":
-        edges = cu_knn_graph(batch.hit_embedding.detach(), k=k, cosine=False, loop=False, r=r)
+        edges = cu_knn_graph(batch.hit_embedding, k=k, cosine=False, loop=False, r=r)
     elif algorithm == "radius_graph":
-        edges = radius_graph(batch.hit_embedding.detach(), r=r, loop=False, max_num_neighbors=k)
+        edges = radius_graph(batch.hit_embedding, r=r, loop=False, max_num_neighbors=k)
     else:
-        edges = knn_graph(batch.hit_embedding.detach(), k=k, cosine=False, loop=False)
+        edges = knn_graph(batch.hit_embedding, k=k, cosine=False, loop=False)
 
     return edges

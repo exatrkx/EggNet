@@ -31,8 +31,9 @@ def submit_to_slurm(command, accelerator, devices, num_nodes, gpu_memory=40):
 mkdir -p logs
 eval "$(conda shell.bash hook)"
 
-# module load python/3.9-anaconda-2021.11
-# mamba activate eggnet
+module load conda/Mambaforge-22.11.1-4
+module load cudatoolkit/12.2
+mamba activate eggnet
 
 export SLURM_CPU_BIND="cores"
 export WANDB__SERVICE_WAIT=300

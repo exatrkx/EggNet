@@ -18,14 +18,14 @@ class NodeEncoding(BaseModule):
         else:
             batch.hit_embedding = self(batch)
 
-        ls = self.loss_fn(batch)
+        ls, signal_ls, knn_ls, random_ls = self.loss_fn(batch)
 
         self.log_dict(
             {
                 "train_loss": ls,
-                # "train_signal_loss": signal_loss,
-                # "train_knn_loss": knn_loss,
-                # "train_random_loss": random_loss,
+                # "train_signal_loss": signal_ls,
+                # "train_knn_loss": knn_ls,
+                # "train_random_loss": random_ls,
             },
             batch_size=1,
         )
