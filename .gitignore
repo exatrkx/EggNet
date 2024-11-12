@@ -163,3 +163,12 @@ cython_debug/
 
 # pytorch lightning
 lightning_logs/
+
+# logs
+logs/
+
+# ckpt
+*ckpt
+
+# yaml
+*.yaml
