@@ -45,6 +45,35 @@ def get_weight(batch, edges, y, weighting_config):
     return w
 
 
+def get_node_weight(batch, weighting_config):
+    """
+    Return node weights based on the specified weighting configuration.
+    """
+    w = torch.ones(batch.hit_id.shape[0], device=batch.hit_id.device)
+    if not weighting_config:
+        return w
+    if (
+        "true_default" in weighting_config
+        and weighting_config["true_default"] is not None
+    ):
+        w[batch.hit_particle_id != 0] = weighting_config["true_default"]
+    if (
+        "fake_default" in weighting_config
+        and weighting_config["fake_default"] is not None
+    ):
+        w[batch.hit_particle_id == 0] = weighting_config["fake_default"]
+    if (
+        "conditional_weighting" in weighting_config
+        and weighting_config["conditional_weighting"] is not None
+    ):
+        for weight_spec in weighting_config["conditional_weighting"]:
+            graph_mask = get_node_target_mask(batch, target_tracks=weight_spec["conditions"])
+
+            w[graph_mask] = weight_spec["weight"]
+
+    return w
+
+
 def get_condition_lambda(condition_key, condition_val):
     condition_dict = {
         "is": lambda event: event[condition_key] == condition_val,

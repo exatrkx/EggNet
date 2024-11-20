@@ -1,10 +1,10 @@
 base_model: NodeEncoding
 model: EggNet
-loss: contrastive
+loss: Contrastive
 dataset: GraphDataset
 input_dir: /global/cfs/cdirs/m2616/data/GNN4ITK/trackml_gnnml_feature_store
-output_dir: <PATH TO OUTPUT DIR>
-project: eggnet_trackml # Used in logging
+output_dir: /global/cfs/cdirs/m2616/data/GNN4ITK/trackml_gnnml_full
+project: eggnet_trackml_full # Used in logging
 accelerator: cuda
 devices: 4
 num_nodes: 1

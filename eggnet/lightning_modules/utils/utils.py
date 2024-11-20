@@ -1,5 +1,9 @@
 import torch
 
+from eggnet.utils.mapping import get_node_target_mask, get_target, get_weight, get_number_of_true_edges
+from eggnet.utils.cluster import cluster
+from eggnet.utils.nearest_neighboring import get_knn_graph
+
 
 def get_optimizers(parameters, hparams):
     """Get the optimizer and scheduler."""
@@ -66,3 +70,116 @@ def get_optimizers(parameters, hparams):
         raise ValueError(f"Unknown scheduler: {hparams['scheduler']}")
 
     return optimizer, scheduler
+
+
+def cluster_eval(batch, hparams):
+
+    if (
+        "true_default" not in hparams.get("weighting")
+        or hparams.get("weighting")["true_default"] != 0
+    ):
+        signal_mask = batch.hit_particle_id != 0
+    else:
+        signal_mask = torch.zeros_like(batch.hit_particle_nhits, dtype=torch.bool)
+
+    if (
+        "conditional_weighting" in hparams.get("weighting")
+        and hparams.get("weighting")["conditional_weighting"]
+    ):
+        for weight_spec in hparams.get("weighting")["conditional_weighting"]:
+            graph_mask = get_node_target_mask(batch, target_tracks=weight_spec["conditions"])
+
+            if weight_spec["weight"] == 0:
+                signal_mask &= ~graph_mask
+            else:
+                signal_mask |= graph_mask
+
+    particles = torch.unique(batch.hit_particle_id[batch.hit_particle_id != 0])
+    target_particles = torch.unique(batch.hit_particle_id[signal_mask])
+
+    cluster(batch, 0.1, 3)
+    uni_labels, inv_idx, count = torch.unique(
+        batch.hit_label, return_counts=True, return_inverse=True
+    )
+    batch.hit_track_length = count[inv_idx]
+    hit_track_info = torch.stack(
+        [
+            batch.hit_label,
+            batch.hit_particle_id,
+            batch.hit_track_length,
+        ], dim=0,
+    )
+    uni_track_info, inv_idx, n_matched_hits = torch.unique(
+        hit_track_info, dim=1, return_counts=True, return_inverse=True
+    )
+    matched_track_particle_id = uni_track_info[1][
+        (uni_track_info[0] >= 0) & (n_matched_hits / uni_track_info[2] > 0.5)
+    ]
+
+    hit_target_track_info = hit_track_info[:, signal_mask]
+    uni_target_track_info, inv_idx, n_matched_target_hits = torch.unique(
+        hit_target_track_info, dim=1, return_counts=True, return_inverse=True
+    )
+    matched_target_tracks = uni_target_track_info[1][
+        (uni_target_track_info[0] >= 0)
+        & (n_matched_target_hits / uni_target_track_info[2] > 0.5),
+    ]
+    matched_target_particles = torch.unique(matched_target_tracks)
+
+    n_particles = len(particles)
+    n_matched_particles = len(torch.unique(matched_track_particle_id))
+    n_matched_tracks = len(matched_track_particle_id)
+    n_target_particles = len(target_particles)
+    n_matched_target_particles = len(matched_target_particles)
+    n_matched_target_tracks = len(matched_target_tracks)
+    n_tracks = len(uni_labels[uni_labels >= 0])
+
+    eff = n_matched_particles / n_particles if n_particles != 0 else 0
+    signal_eff = n_matched_target_particles / n_target_particles if n_target_particles != 0 else 0
+    dup = (
+        n_matched_target_tracks - n_matched_target_particles
+    ) / n_matched_target_particles if n_matched_target_particles != 0 else 0
+    fak = (n_tracks - n_matched_tracks) / n_matched_particles if n_matched_particles != 0 else 0
+
+    return eff, signal_eff, dup, fak
+
+
+def knn_eval(batch, hparams):
+
+    edges = get_knn_graph(
+        batch,
+        k=hparams["knn_val"],
+        r=hparams.get("r_max"),
+        algorithm=hparams.get("knn_algorithm", "cu_knn"),
+    )
+    if hparams.get("node_filter"):
+        edges = batch.filter_node_list[edges]
+
+    y = get_target(edges, batch.hit_particle_id)
+    w = get_weight(batch, edges, y, weighting_config=hparams.get("weighting"))
+    tp = torch.sum(y == 1)
+    target_tp = torch.sum((y == 1) & (w > 0))
+
+    eff = (
+        tp
+        / get_number_of_true_edges(
+            batch,
+            reduction="sum",
+            upper_bound=hparams["knn_val"],
+            weighting_config=hparams.get("weighting"),
+        )[1]
+    )
+    signal_eff = (
+        target_tp
+        / get_number_of_true_edges(
+            batch,
+            target="weight-based",
+            reduction="sum",
+            upper_bound=hparams["knn_val"],
+            weighting_config=hparams.get("weighting"),
+        )[1]
+    )
+    pur = tp / len(y)
+    f1 = 2 * (eff * pur) / (eff + pur)
+
+    return eff, signal_eff, pur, f1

@@ -9,14 +9,25 @@ def hinge_loss(
     margin,
     y=None,
     w=None,
+    f=None,
     node_filter=False,
     weighting_config=None,
+    sum=False,
+    node_score=False,
 ):
     if y is None:
         y = get_target(edges, batch.hit_particle_id)
 
     if w is None:
         w = get_weight(batch, edges, y, weighting_config=weighting_config)
+    elif weighting_config is not None:
+        w *= get_weight(batch, edges, y, weighting_config=weighting_config)
+    if node_score:
+        beta = torch.sigmoid(batch.hit_score).flatten()
+        w *= beta[edges[0]] * beta[edges[1]]
+
+    if f is None:
+        f = torch.ones(edges.shape[1], device=edges.device)
 
     d = get_distances(
         batch.hit_embedding, edges, batch.filter_node_list if node_filter else None
@@ -28,7 +39,10 @@ def hinge_loss(
         margin=margin,
         reduction="none",
     ).pow(2)
-    return (loss * w).sum() / w.sum()
+    if sum:
+        return (loss * w * f).sum()
+    else:
+        return (loss * w * f).sum() / w.sum()
 
 
 def get_distances(node_embedding, edges, filter_node_list=None):
@@ -63,7 +77,7 @@ def get_distances(node_embedding, edges, filter_node_list=None):
     return res
 
 
-def signal_loss(batch, margin, node_filter=False, weighting_config=None):
+def signal_loss(batch, margin, node_filter=False, weighting_config=None, node_score=False):
     return hinge_loss(
         batch,
         batch.track_edges,
@@ -71,22 +85,23 @@ def signal_loss(batch, margin, node_filter=False, weighting_config=None):
         y=torch.ones(batch.track_edges.shape[1], device=batch.track_edges.device),
         node_filter=node_filter,
         weighting_config=weighting_config,
+        node_score=node_score,
     )
 
 
 def knn_loss(
-    batch, margin, k, r=None, algorithm="cu_knn", node_filter=False, weighting_config=None
+    batch, margin, k, r=None, algorithm="cu_knn", node_filter=False, weighting_config=None, node_score=False
 ):
     # TODO correctly handle node filter!!! Perform KNN on the filtered nodes instead
     edges = get_knn_graph(batch, k, r=r, algorithm=algorithm)
     if node_filter:
         edges = batch.filter_node_list[edges]
     return hinge_loss(
-        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config
+        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
     )
 
 
-def random_loss(batch, margin, randomisation, node_filter=False, weighting_config=None):
+def random_loss(batch, margin, randomisation, node_filter=False, weighting_config=None, node_score=False):
     edges = torch.randint(
         0,
         batch.hit_r.shape[0],
@@ -94,5 +109,5 @@ def random_loss(batch, margin, randomisation, node_filter=False, weighting_confi
         device=batch.hit_r.device,
     )
     return hinge_loss(
-        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config
+        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
     )

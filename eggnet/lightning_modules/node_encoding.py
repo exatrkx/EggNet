@@ -1,10 +1,7 @@
 import os
 
-import torch
-
-from eggnet.utils.nearest_neighboring import get_knn_graph
-from eggnet.utils.mapping import get_target, get_weight, get_number_of_true_edges
 from .base_module import BaseModule
+from .utils.utils import cluster_eval
 
 
 class NodeEncoding(BaseModule):
@@ -18,19 +15,14 @@ class NodeEncoding(BaseModule):
         else:
             batch.hit_embedding = self(batch)
 
-        ls, signal_ls, knn_ls, random_ls = self.loss_fn(batch)
+        res = self.loss_fn(batch)
 
         self.log_dict(
-            {
-                "train_loss": ls,
-                # "train_signal_loss": signal_ls,
-                # "train_knn_loss": knn_ls,
-                # "train_random_loss": random_ls,
-            },
+            {f"tran_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
             batch_size=1,
         )
 
-        return ls
+        return res["loss"]
 
     def validation_step(self, batch, batch_idx):
         """
@@ -41,41 +33,7 @@ class NodeEncoding(BaseModule):
         else:
             batch.hit_embedding = self(batch)
 
-        edges = get_knn_graph(
-            batch,
-            k=self.hparams["knn_val"],
-            r=self.hparams.get("r_max"),
-            algorithm=self.hparams.get("knn_algorithm", "cu_knn"),
-        )
-        if self.hparams.get("node_filter"):
-            edges = batch.filter_node_list[edges]
-
-        y = get_target(edges, batch.hit_particle_id)
-        w = get_weight(batch, edges, y, weighting_config=self.hparams.get("weighting"))
-        tp = torch.sum(y == 1)
-        target_tp = torch.sum((y == 1) & (w > 0))
-
-        eff = (
-            tp
-            / get_number_of_true_edges(
-                batch,
-                reduction="sum",
-                upper_bound=self.hparams["knn_val"],
-                weighting_config=self.hparams.get("weighting"),
-            )[1]
-        )
-        signal_eff = (
-            target_tp
-            / get_number_of_true_edges(
-                batch,
-                target="weight-based",
-                reduction="sum",
-                upper_bound=self.hparams["knn_val"],
-                weighting_config=self.hparams.get("weighting"),
-            )[1]
-        )
-        pur = tp / len(y)
-        # f1 = 2 * (eff * pur) / (eff + pur)
+        eff, signal_eff, dup, fak = cluster_eval(batch, self.hparams)
 
         current_lr = self.optimizers().param_groups[0]["lr"]
 
@@ -84,7 +42,8 @@ class NodeEncoding(BaseModule):
                 "lr": current_lr,
                 "val_eff": eff,
                 "val_signal_eff": signal_eff,
-                "val_pur": pur,
+                "val_fak": fak,
+                "val_dup": dup,
             },
             batch_size=1,
         )

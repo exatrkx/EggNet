@@ -1,6 +1,6 @@
 base_model: NodeEncoding
 model: EggNet
-loss: contrastive
+loss: Contrastive
 dataset: GraphDataset
 input_dir: /global/cfs/cdirs/m3443/data/GNN4ITK/CHEP2024_data_diff_var/feature_store
 output_dir: <PATH TO OUTPUT DIR>

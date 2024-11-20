@@ -79,6 +79,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             "dbscan": [event["cluster"]],
         })])
 
+    # check metric!!
     eps_data["eff"] = eps_data.n_matched_target_particles / eps_data.n_particles
     eps_data["dup"] = (
         eps_data.n_matched_target_tracks - eps_data.n_matched_target_particles

@@ -105,7 +105,7 @@ class EggNet(nn.Module):
             ]
         )
 
-        if hparams.get("node_filter"):
+        if hparams.get("node_filter") or hparams.get("output_node_score"):
             self.node_filters = nn.ModuleList(
                 [
                     make_mlp(
@@ -116,7 +116,7 @@ class EggNet(nn.Module):
                         layer_norm=hparams["layernorm"],
                         batch_norm=hparams["batchnorm"],
                         hidden_activation=hparams["hidden_activation"],
-                        output_activation="Sigmoid",
+                        output_activation=None,
                     )
                     for i in range(
                         1 if hparams["recurrent"] else (hparams["n_iters"] + 1)
@@ -201,15 +201,25 @@ class EggNet(nn.Module):
                 x = self.gat(x, start, end, i)
 
         if self.hparams.get("checkpoint", False):
-            x = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
+            batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
         else:
-            x = self.node_decoders[-1](x)
+            batch.hit_embedding = self.node_decoders[-1](x)
         if self.hparams["embedding_norm"]:
-            x = F.normalize(x)
-        if self.hparams.get("node_filter"):
-            return x, filter_node_list
-        else:
-            return x
+            batch.hit_embedding = F.normalize(batch.hit_embedding)
+        if self.hparams.get("output_node_score"):
+            if self.hparams.get("checkpoint", False):
+                batch.hit_score = checkpoint(
+                    self.node_filters[-1],
+                    x,
+                    use_reentrant=False,
+                )
+            else:
+                batch.hit_score = self.node_filters[-1](x)
+        return batch.hit_embedding
+        # if self.hparams.get("node_filter"):
+        #     return x, filter_node_list
+        # else:
+        #     return x
 
     def gat(self, x, start, end, i):
         e = None
