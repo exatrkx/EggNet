@@ -2,7 +2,6 @@ import torch
 
 from eggnet.utils.mapping import get_node_target_mask, get_target, get_weight, get_number_of_true_edges
 from eggnet.utils.cluster import cluster
-from eggnet.utils.nearest_neighboring import get_knn_graph
 
 
 def get_optimizers(parameters, hparams):
