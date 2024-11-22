@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .utils.utils import hinge_loss
 from eggnet.utils.timing import time_function
