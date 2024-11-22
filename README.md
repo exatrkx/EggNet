@@ -20,8 +20,6 @@ Assuming GPU capability with cuda version >= 12.2, run the following commands.
 ```
 mamba create --name eggnet python=3.10 && mamba activate eggnet
 pip install torch==2.1.0 && pip install --no-cache-dir -r requirements.txt
-pip install 'object_condensation[pytorch]'
-pip install faiss-gpu-cu12[fix-cuda]
 pip install -e .
 ```
 

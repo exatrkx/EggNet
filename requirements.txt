@@ -16,3 +16,5 @@ cugraph-cu12
 cuml-cu12
 wandb
 python-dotenv
+object_condensation[pytorch]
+faiss-gpu-cu12[fix-cuda]
