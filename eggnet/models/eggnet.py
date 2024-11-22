@@ -4,11 +4,9 @@ from torch_geometric.utils import softmax
 from torch_scatter import scatter_add
 import torch.nn as nn
 
-# import pytorch_pfn_extras as ppe
-
 from torch.utils.checkpoint import checkpoint
 
-from eggnet.utils.nearest_neighboring import get_knn_graph
+from eggnet.utils import nearest_neighboring
 from .utils.utils import make_mlp
 
 
@@ -124,7 +122,7 @@ class EggNet(nn.Module):
                 ]
             )
 
-        # ppe.cuda.use_torch_mempool_in_cupy()
+        self.knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
 
     def build_edges(self, batch, x, i, time_yes=False):
         """
@@ -140,12 +138,11 @@ class EggNet(nn.Module):
             else self.hparams["knn_train"][i]
         )
 
-        return get_knn_graph(
+        return self.knn.get_graph(
             batch,
             k=k,
             time_yes=time_yes,
-            r=self.hparams.get("r_max"),
-            algorithm=self.hparams.get("knn_algorithm", "cu_knn"),
+            r=self.hparams.get("r_max_train"),
         )
 
     def forward(self, batch, time_yes=False, **kwargs):

@@ -1,5 +1,5 @@
 import torch
-from eggnet.utils.nearest_neighboring import get_knn_graph
+
 from eggnet.utils.mapping import get_target, get_weight
 
 
@@ -75,39 +75,3 @@ def get_distances(node_embedding, edges, filter_node_list=None):
     else:
         res = d
     return res
-
-
-def signal_loss(batch, margin, node_filter=False, weighting_config=None, node_score=False):
-    return hinge_loss(
-        batch,
-        batch.track_edges,
-        margin,
-        y=torch.ones(batch.track_edges.shape[1], device=batch.track_edges.device),
-        node_filter=node_filter,
-        weighting_config=weighting_config,
-        node_score=node_score,
-    )
-
-
-def knn_loss(
-    batch, margin, k, r=None, algorithm="cu_knn", node_filter=False, weighting_config=None, node_score=False
-):
-    # TODO correctly handle node filter!!! Perform KNN on the filtered nodes instead
-    edges = get_knn_graph(batch, k, r=r, algorithm=algorithm)
-    if node_filter:
-        edges = batch.filter_node_list[edges]
-    return hinge_loss(
-        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
-    )
-
-
-def random_loss(batch, margin, randomisation, node_filter=False, weighting_config=None, node_score=False):
-    edges = torch.randint(
-        0,
-        batch.hit_r.shape[0],
-        (2, randomisation),
-        device=batch.hit_r.device,
-    )
-    return hinge_loss(
-        batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
-    )

@@ -18,7 +18,7 @@ class NodeEncoding(BaseModule):
         res = self.loss_fn(batch)
 
         self.log_dict(
-            {f"tran_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
+            {f"train_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
             batch_size=1,
         )
 

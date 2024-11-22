@@ -51,9 +51,10 @@ recurrent_gnn: False
 knn_train: 10
 randomisation: 100000
 knn_loss: 10
-knn_val: 10
 margin: 1
 knn_algorithm: cu_knn
+knn_algorithm_loss: cu_knn # radius_graph
+# r_max_loss: 0.1
 
 # Training parameters
 warmup: 10

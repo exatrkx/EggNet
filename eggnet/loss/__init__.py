@@ -1,5 +1,4 @@
-from .contrastive import Contrastive
-from .weighted_contrastive import WeightedContrastive
+from .contrastive import Contrastive, WeightedContrastive
 from .object_condensation import ObjectCondensation
 
 __all__ = [

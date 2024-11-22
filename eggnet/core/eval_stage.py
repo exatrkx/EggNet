@@ -75,7 +75,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         time_data = pd.concat([time_data, pd.DataFrame({
             "num_nodes": [event["num_nodes"].cpu()],
             "eggnet": [event["BaseModule.forward"]],
-            "knn": [event["get_knn_graph"]],
+            "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
             "dbscan": [event["cluster"]],
         })])
 
