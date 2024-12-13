@@ -26,7 +26,7 @@ pip install -e .
 Replace `mamba` with `conda` if using conda environment instead.
 
 ## Running EggNet pipeline
-A full cycle consists of three stages: training, inference and evaluation. 
+A full cycle consists of three stages: training, inference and evaluation.
 
 ### Training
 To train an EggNet model, one needs to prepare a training configuration file `.yaml`. Example training yaml can be found in `configs/trackML/eggnet_trackml.yaml`. The command to run the training:
@@ -46,6 +46,13 @@ Options:
 ```
 
 During the training, the model checkpoints will be automatically saved in the `output_dir` specified in the training yaml, which can be used to resume a training, or used for inference (next step). The training progress will also be logged on Wandb.
+
+An example command:
+
+```
+cd configs/trackML
+eggnet train eggnet_trackml.yaml
+```
 
 ### Inference
 To perform an inference, run the following command:
@@ -74,6 +81,13 @@ Options:
 ```
 Note that here `TRAINING_CONFIG` should be exactly the same as what was used for the training. The data with the inference results (i.e. node embedding) will be saved to the `output_dir`.
 
+An example command:
+
+```
+cd configs/trackML
+eggnet infer -c path/xxxx.ckpt eggnet_trackml.yaml
+```
+
 ### Evaluation
 To run the evaluation, one needs to run the inference first with the inference data. One then needs to provide both the training yaml as well as an evaluation yaml. An example evaluation yaml can be found in `configs/trackML/eval_trackml.yaml`. The command to run the evaluation:
 
@@ -94,6 +108,13 @@ Options:
   --help                          Show this message and exit.
 ```
 The evaluation will run the clustering on the node embedding and calculate track efficiency, fake rate and duplication rate. It will also evaluate inferece time. Results are saved to the same output_dir where the inference data are stored.
+
+An example command:
+
+```
+cd configs/trackML
+eggnet eval eggnet_trackml.yaml eval_trackml.yaml
+```
 
 ## Slurm batch
 
