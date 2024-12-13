@@ -86,7 +86,7 @@ Options:
                                   to save the evaluation plots. Default to the
                                   same output_dir as in training_config if not
                                   specified.
-  -a, --accelerator [cuda|cpu]    Which device to use. Default is cpu.
+  -a, --accelerator [cuda|cpu]    Which device to use. Default is cuda. Currently only supports cuda
   -d, --dataset [trainset|valset|testset]
                                   Specify a dataset to run inference. Default
                                   is valset.
