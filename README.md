@@ -45,7 +45,7 @@ Options:
   --help                        Show this message and exit.
 ```
 
-During the training, the model checkpoints will be automatically saved in the `output_dir` specified in the training yaml, which can be used to resume a training, or used for inference (next step). The training progress will also be logged on Wandb.
+During the training, the model checkpoints will be automatically saved in the `output_dir` specified in the training yaml, which can be used to resume a training, or used for inference (next step). The training progress will also be logged on Wandb by default. To turn off Wandb, set `log_wandb: False` in the training yaml.
 
 An example command:
 
