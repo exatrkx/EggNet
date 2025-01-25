@@ -2,22 +2,37 @@ import pandas as pd
 import numpy as np
 import torch
 import cuml
+import cupy
+import pytorch_pfn_extras as ppe
 
 from eggnet.utils.mapping import get_node_target_mask
 from eggnet.utils.timing import time_function
 
 
 @time_function
-def cluster(event, eps, min_samples):
+def cluster(event, eps, min_samples, node_filter=False, cpu=False):
     """
     Perform clustering (currently only DBSCAN is supported).
     A track label for each hit will be written to the pyg object.
     """
+    ppe.cuda.use_torch_mempool_in_cupy()
+    stream = torch.cuda.Stream()
 
-    clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
-    # clusterer = cuml.cluster.hdbscan.HDBSCAN(min_cluster_size=3, allow_single_cluster=True, cluster_selection_epsilon=0)
-    hit_label = clusterer.fit_predict(event.hit_embedding)
-    event.hit_label = torch.as_tensor(hit_label, device=event.hit_embedding.device)
+    with ppe.cuda.stream(stream):
+        with cupy.cuda.Device(event.hit_embedding.device.index):
+            clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
+            # clusterer = cuml.cluster.hdbscan.HDBSCAN(min_cluster_size=3, allow_single_cluster=True, cluster_selection_epsilon=0)
+            x_cu = event.hit_embedding #.detach().clone()
+            if node_filter:
+                x_cu = x_cu[event.hit_noise_mask]
+            x_cu = cupy.from_dlpack(x_cu)
+            hit_label = clusterer.fit_predict(x_cu)
+            hit_label = torch.from_dlpack(hit_label)
+    if node_filter: 
+        event.hit_label = torch.ones(len(event.hit_embedding), dtype=torch.int, device=event.hit_embedding.device) * -1
+        event.hit_label[event.hit_noise_mask] = hit_label
+    else:
+        event.hit_label = hit_label
 
 
 def cluster_and_match(event, eps, eval_config, time_yes=False):

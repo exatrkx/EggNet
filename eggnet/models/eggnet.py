@@ -124,26 +124,49 @@ class EggNet(nn.Module):
 
         self.knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
 
-    def build_edges(self, batch, x, i, time_yes=False):
+    def build_edges(self, batch, i, time_yes=False):
         """
         Get the hit embedding with decodder and obtain KNN edges.
         """
-        batch.hit_embedding = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
-        if self.hparams["embedding_norm"]:
-            batch.hit_embedding = F.normalize(batch.hit_embedding)
-
         k = (
             self.hparams["knn_train"]
             if type(self.hparams["knn_train"]) is int
             else self.hparams["knn_train"][i]
         )
 
+        if self.hparams.get("node_soft_filter"):
+            if len(self.hparams.get("node_hard_filter", [])) > 1:
+                x_search_mask = (torch.sigmoid(batch.hit_score).flatten()[batch.hit_noise_mask] > self.hparams["node_soft_filter"][i])
+            else:
+                x_search_mask = (torch.sigmoid(batch.hit_score).flatten() > self.hparams["node_soft_filter"][i])
+        else:
+            x_search_mask = None
+
         return self.knn.get_graph(
             batch,
             k=k,
-            time_yes=time_yes,
             r=self.hparams.get("r_max_train"),
+            node_filter=True if len(self.hparams.get("node_hard_filter", [])) > 1 else False,
+            x_search_mask=x_search_mask,
+            time_yes=time_yes,
         )
+
+    def node_decode(self, batch, x, i):
+        hit_embedding = self.node_decoders[0 if self.hparams["recurrent"] else i](x)
+        if self.hparams["embedding_norm"]:
+            hit_embedding = F.normalize(hit_embedding)
+        if len(self.hparams.get("node_hard_filter", [])) > 1 and "hit_embedding" in batch.keys():
+            batch.hit_embedding[batch.hit_noise_mask] = hit_embedding
+        else:
+            batch.hit_embedding = hit_embedding
+        if len(self.hparams.get("node_hard_filter", [])) > 1 or self.hparams.get("node_soft_filter") or ((self.hparams.get("node_hard_filter") or self.hparams.get("output_node_score")) and i == -1):
+            hit_score = self.node_filters[
+                0 if self.hparams["recurrent"] else i
+            ](x)
+            if len(self.hparams.get("node_hard_filter", [])) > 1 and "hit_score" in batch.keys():
+                batch.hit_score[batch.hit_noise_mask] = hit_score
+            else:
+                batch.hit_score = hit_score
 
     def forward(self, batch, time_yes=False, **kwargs):
         x = torch.stack(
@@ -158,65 +181,48 @@ class EggNet(nn.Module):
         else:
             v = self.node_encoder(x)
             x = self.node_network_0(v)
-        if self.hparams.get("node_filter"):
-            filter_node_list = torch.arange(len(x), device=self.device)
 
         # Loop over iterations of edge and node networks
         for i in range(self.hparams["n_iters"]):
+            # get node embedding and node score
+            if self.hparams.get("checkpoint", False):
+                checkpoint(self.node_decode, batch, x, i, use_reentrant=False)
+            else:
+                self.node_decode(batch, x, i)
             # node filter
-            if self.hparams.get("node_filter"):
-                if self.hparams.get("checkpoint", False):
-                    node_score = checkpoint(
-                        self.node_filters[0 if self.hparams["recurrent"] else i],
-                        x,
-                        use_reentrant=False,
-                    )
-                else:
-                    node_score = self.node_filters[
-                        0 if self.hparams["recurrent"] else i
-                    ](x)
-                node_mask = (node_score > self.hparams["node_filter_cut"][i]).flatten()
-                x = x[node_mask]
-                v = v[node_mask]
-                filter_node_list = filter_node_list[node_mask]
+            if len(self.hparams.get("node_hard_filter", [])) > 1:
+                batch.hit_noise_mask = (torch.sigmoid(batch.hit_score).flatten() > self.hparams["node_hard_filter"][i])  # .detach()
             # KNN
             if self.hparams.get("checkpoint", False):
                 start, end = checkpoint(
                     self.build_edges,
                     batch,
-                    x,
                     i,
+                    time_yes=time_yes,
                     use_reentrant=False,
                 )
             else:
-                start, end = self.build_edges(batch, x, i, time_yes=time_yes)
+                start, end = self.build_edges(batch, i, time_yes=time_yes)
+
+            # Message passing
             if self.hparams.get("recycle_node_representation", True):
-                x = v
+                if len(self.hparams.get("node_hard_filter", [])) > 1:
+                    x = v[batch.hit_noise_mask]
+                else:
+                    x = v
             if self.hparams.get("checkpoint", False):
                 x = checkpoint(self.gat, x, start, end, i, use_reentrant=False)
             else:
                 x = self.gat(x, start, end, i)
 
         if self.hparams.get("checkpoint", False):
-            batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
+            checkpoint(self.node_decode, batch, x, -1, use_reentrant=False)
         else:
-            batch.hit_embedding = self.node_decoders[-1](x)
-        if self.hparams["embedding_norm"]:
-            batch.hit_embedding = F.normalize(batch.hit_embedding)
-        if self.hparams.get("output_node_score"):
-            if self.hparams.get("checkpoint", False):
-                batch.hit_score = checkpoint(
-                    self.node_filters[-1],
-                    x,
-                    use_reentrant=False,
-                )
-            else:
-                batch.hit_score = self.node_filters[-1](x)
-        return batch.hit_embedding
-        # if self.hparams.get("node_filter"):
-        #     return x, filter_node_list
-        # else:
-        #     return x
+            self.node_decode(batch, x, -1)
+        if self.hparams.get("node_hard_filter"):
+            batch.hit_noise_mask = (torch.sigmoid(batch.hit_score).flatten() > self.hparams["node_hard_filter"][-1])  # .detach()
+
+        return 0
 
     def gat(self, x, start, end, i):
         e = None

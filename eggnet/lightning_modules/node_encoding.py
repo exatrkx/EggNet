@@ -1,5 +1,8 @@
 import os
 
+import torch
+import gc
+
 from .base_module import BaseModule
 from .utils.utils import cluster_eval
 
@@ -10,28 +13,33 @@ class NodeEncoding(BaseModule):
 
     def training_step(self, batch, batch_idx):
 
-        if self.hparams.get("node_filter"):
-            batch.hit_embedding, batch.filter_node_list = self(batch)
-        else:
-            batch.hit_embedding = self(batch)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        self(batch)
 
         res = self.loss_fn(batch)
 
         self.log_dict(
             {f"train_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
             batch_size=1,
+            sync_dist=True,
         )
 
         return res["loss"]
+
+    def on_validation_epoch_end(self):
+
+        torch.save(self, 'test.pth')
 
     def validation_step(self, batch, batch_idx):
         """
         Step to evaluate the model's performance
         """
-        if self.hparams.get("node_filter"):
-            batch.hit_embedding, batch.filter_node_list = self(batch)
-        else:
-            batch.hit_embedding = self(batch)
+        self(batch)
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
         eff, signal_eff, dup, fak = cluster_eval(batch, self.hparams)
 
@@ -46,6 +54,7 @@ class NodeEncoding(BaseModule):
                 "val_dup": dup,
             },
             batch_size=1,
+            sync_dist=True,
         )
         # print("validation step end", torch.cuda.max_memory_allocated(device="cuda"))
 
@@ -65,10 +74,8 @@ class NodeEncoding(BaseModule):
         ):
             return 0
 
-        if self.hparams.get("node_filter"):
-            batch.hit_embedding, batch.filter_node_list = self(batch, time_yes=True)
-        else:
-            batch.hit_embedding = self(batch, time_yes=True)
+        self(batch, time_yes=True)
+        eff, signal_eff, dup, fak = cluster_eval(batch, self.hparams)
 
         dataset.unscale_features(batch)
 

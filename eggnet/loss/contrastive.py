@@ -28,7 +28,7 @@ class Contrastive(nn.Module):
         res["signal_loss"] = self.signal_loss(
             batch,
             self.hparams["margin"],
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
         )["loss"]
         res["knn_loss"] = self.knn_loss(
@@ -37,14 +37,14 @@ class Contrastive(nn.Module):
             self.hparams["knn_loss"],
             r=self.hparams.get("r_max_loss"),
             algorithm=self.hparams.get("knn_algorithm_loss", "cu_knn"),
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
         )["loss"]
         res["random_loss"] = self.random_loss(
             batch,
             self.hparams["margin"],
             self.hparams["randomisation"],
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
         )["loss"]
         res["loss"] = res["signal_loss"] + res["knn_loss"] + res["random_loss"]
@@ -72,7 +72,7 @@ class WeightedContrastive(nn.Module):
         res["signal_loss"] = self.signal_loss(
             batch,
             self.hparams["margin"],
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
             node_score=True,
         )["loss"]
@@ -82,7 +82,7 @@ class WeightedContrastive(nn.Module):
             self.hparams["knn_loss"],
             r=self.hparams.get("r_max_loss"),
             algorithm=self.hparams.get("knn_algorithm_loss", "cu_knn"),
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
             node_score=True,
         )["loss"]
@@ -90,7 +90,7 @@ class WeightedContrastive(nn.Module):
             batch,
             self.hparams["margin"],
             self.hparams["randomisation"],
-            node_filter=self.hparams.get("node_filter"),
+            node_filter=True if self.hparams.get("node_hard_filter") else False,
             weighting_config=self.hparams.get("weighting"),
             node_score=True,
         )["loss"]
@@ -137,10 +137,11 @@ class knn_contrastive_loss(nn.Module):
         edges = self.knn.get_graph(
             batch,
             k=k,
-            r=self.hparams.get("r_max_train"),
+            r=r,
+            node_filter=node_filter, 
         )
         if node_filter:
-            edges = batch.filter_node_list[edges]
+            edges = torch.arange(len(batch.hit_id), device=batch.hit_id.device)[batch.hit_noise_mask][edges]
         res["loss"] = hinge_loss(
             batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
         )
@@ -159,10 +160,12 @@ class random_contrastive_loss(nn.Module):
         res = {}
         edges = torch.randint(
             0,
-            batch.hit_id.shape[0],
+            (batch.hit_noise_mask).sum() if node_filter else batch.hit_id.shape[0],
             (2, randomisation),
             device=batch.hit_id.device,
         )
+        if node_filter:
+            edges = torch.arange(len(batch.hit_id), device=batch.hit_id.device)[batch.hit_noise_mask][edges]
         res["loss"] = hinge_loss(
             batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
         )

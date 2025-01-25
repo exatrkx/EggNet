@@ -96,7 +96,7 @@ def cluster_eval(batch, hparams):
     particles = torch.unique(batch.hit_particle_id[batch.hit_particle_id != 0])
     target_particles = torch.unique(batch.hit_particle_id[signal_mask])
 
-    cluster(batch, 0.1, 3)
+    cluster(batch, 0.1, 3, node_filter=True if hparams.get("node_hard_filter") else False)
     uni_labels, inv_idx, count = torch.unique(
         batch.hit_label, return_counts=True, return_inverse=True
     )

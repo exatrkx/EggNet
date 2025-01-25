@@ -30,7 +30,7 @@ def hinge_loss(
         f = torch.ones(edges.shape[1], device=edges.device)
 
     d = get_distances(
-        batch.hit_embedding, edges, batch.filter_node_list if node_filter else None
+        batch.hit_embedding, edges, None
     )
 
     loss = torch.nn.functional.hinge_embedding_loss(
