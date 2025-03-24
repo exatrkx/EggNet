@@ -1,5 +1,5 @@
 import click
-from . import train_stage, infer_stage, eval_stage
+# from . import train_stage, infer_stage, eval_stage
 
 
 @click.group()
@@ -25,6 +25,7 @@ def cli():
 )
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def train(**kwargs):
+    from . import train_stage
     return train_stage.train(**kwargs)
 
 
@@ -40,6 +41,7 @@ def train(**kwargs):
 @click.option("--num_nodes", "-n", default=None, type=int, help="Number of nodes. Default will be what is specified in the training config.")
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def infer(**kwargs):
+    from . import infer_stage
     return infer_stage.infer(**kwargs)
 
 
@@ -51,6 +53,7 @@ def infer(**kwargs):
 @click.option("--dataset", "-d", default="valset", type=click.Choice(["trainset", "valset", "testset"]), help="Specify a dataset to run inference. Default is valset.")
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def eval(**kwargs):
+    from . import eval_stage
     return eval_stage.eval(**kwargs)
 
 
