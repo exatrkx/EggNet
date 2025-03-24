@@ -92,7 +92,7 @@ class EggNet(nn.Module):
             [
                 make_mlp(
                     hparams["node_rep_dim"],
-                    [hparams["decoder_hiden"]] * (hparams["n_decoder_layers"] - 1)
+                    [hparams["decoder_hidden"]] * (hparams["n_decoder_layers"] - 1)
                     + [hparams["node_pspace_dim"]],
                     layer_norm=hparams["layernorm"],
                     batch_norm=hparams["batchnorm"],
