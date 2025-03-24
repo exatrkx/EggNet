@@ -108,7 +108,7 @@ class EggNet(nn.Module):
                 [
                     make_mlp(
                         hparams["node_rep_dim"],
-                        [hparams["node_filter_hiden"]]
+                        [hparams["node_filter_hidden"]]
                         * (hparams["n_node_filter_layers"] - 1)
                         + [1],
                         layer_norm=hparams["layernorm"],
