@@ -40,6 +40,7 @@ def train(**kwargs):
 @click.option("--devices", "-dv", default=None, type=int, help="Number of devices. Default will be what is specified in the training config.")
 @click.option("--num_nodes", "-n", default=None, type=int, help="Number of nodes. Default will be what is specified in the training config.")
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
+@click.option("--dataset_path","-dp", default=None, help="A path to the dataset to be used for inference.")
 def infer(**kwargs):
     from . import infer_stage
     return infer_stage.infer(**kwargs)

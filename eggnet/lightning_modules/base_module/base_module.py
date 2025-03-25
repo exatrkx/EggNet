@@ -26,7 +26,11 @@ class BaseModule(LightningModule):
     def forward(self, batch, time_yes=False, **kwargs):
         return self.model(batch, time_yes=time_yes, **kwargs)
 
+    #BUG: `setup` is called automatically by lightning so datasets and dataset_path will always be None
     def setup(self, stage="fit", datasets=None):
+        # dataset path must be passed by state
+        if stage != 'test':
+            dataset_path = self.dataset_path
         if datasets is None:
             datasets = ["trainset", "valset", "testset"]
         if stage == "fit":
@@ -34,9 +38,18 @@ class BaseModule(LightningModule):
             precision = "medium"
         else:
             precision = "high"
-        if stage == "test":
+
+        # Indicate to dataloader to not enforce data_num from config file
+        if stage != 'test' and dataset_path is not None:
+            print(f"INFO: Using user-specified dataset at {dataset_path}")
+            data_dir = str(dataset_path)
+            if not os.path.isdir(data_dir):
+                raise FileExistsError("ERROR: The dataset directory specified does not exist!")
+        elif stage == "test":
+            print(f"INFO: Loading data from output directory")
             data_dir = self.hparams["output_dir"]
         else:
+            print(f"INFO: Loading data from input directory")
             data_dir = self.hparams["input_dir"]
         self.load_data(data_dir, stage, datasets)
         torch.set_float32_matmul_precision(precision)
@@ -49,7 +62,9 @@ class BaseModule(LightningModule):
                 dataset = self.dataset_class(
                     input_dir,
                     data_name,
-                    data_num,
+                    # If the user specifies a dataset path, it will not line up with the data_num in the config file
+                    # In the eval stage, ignore this check
+                    data_num if (stage != 'test' and self.dataset_path is None) else None,
                     stage,
                     self.hparams,
                 )
