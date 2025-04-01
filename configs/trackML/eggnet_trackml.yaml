@@ -30,7 +30,7 @@ node_hidden: 128
 edge_hidden: 128
 node_0_hidden: 128
 encoder_hidden: 128
-decoder_hiden: 128
+decoder_hidden: 128
 node_rep_dim: 128
 edge_rep_dim: 128
 node_pspace_dim: 24

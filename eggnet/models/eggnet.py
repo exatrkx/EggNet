@@ -15,6 +15,9 @@ class EggNet(nn.Module):
         super().__init__()
 
         self.hparams = hparams
+        # Added for backwards compatibility with exisiting checkpoint files
+        if "decoder_hiden" in hparams:
+            self.hparams["decoder_hidden"] = hparams["decoder_hiden"]
 
         # Construct the MLP architecture
         in_channels = len(hparams["node_features"])
@@ -92,7 +95,7 @@ class EggNet(nn.Module):
             [
                 make_mlp(
                     hparams["node_rep_dim"],
-                    [hparams["decoder_hiden"]] * (hparams["n_decoder_layers"] - 1)
+                    [hparams["decoder_hidden"]] * (hparams["n_decoder_layers"] - 1)
                     + [hparams["node_pspace_dim"]],
                     layer_norm=hparams["layernorm"],
                     batch_norm=hparams["batchnorm"],
@@ -108,7 +111,7 @@ class EggNet(nn.Module):
                 [
                     make_mlp(
                         hparams["node_rep_dim"],
-                        [hparams["node_filter_hiden"]]
+                        [hparams["node_filter_hidden"]]
                         * (hparams["n_node_filter_layers"] - 1)
                         + [1],
                         layer_norm=hparams["layernorm"],
