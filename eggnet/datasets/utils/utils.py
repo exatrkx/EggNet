@@ -27,6 +27,7 @@ def load_datafiles_in_dir(input_dir, data_name=None, data_num=None):
         assert len(data_files) == data_num, (
             f"Number of data files found ({len(data_files)}) is less than the number"
             f" requested ({data_num})"
+            f" in {input_dir}"
         )
 
     return data_files
