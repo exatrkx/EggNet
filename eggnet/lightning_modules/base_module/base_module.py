@@ -27,8 +27,9 @@ class BaseModule(LightningModule):
         return self.model(batch, time_yes=time_yes, **kwargs)
 
     #BUG: `setup` is called automatically by lightning so datasets and dataset_path will always be None
-    def setup(self, stage="fit", datasets=None):
-        # dataset path must be passed by state
+    def setup(self, stage="fit"):
+        # dataset path must be passed by state as well as `datasets`
+        datasets = getattr(self, "datasets")
         if stage == 'predict':
             input_dir = getattr(self, "input_dir", None)
         if datasets is None:

@@ -1,16 +1,13 @@
 import sys
 import os
-import subprocess
-import torch_geometric as pyg
 import torch
 import numpy as np
-from utils import get_realpath
-from eggnet import lightning_modules
 from eggnet.utils.cluster import cluster
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-import pandas as pd
 
 INFER_PYG_FILE = '/global/cfs/projectdirs/m3443/usr/lynkallo/EggNet/experiment/test/testset/event000010000.pyg'
+USE_TARGET_PARTICLES = True
 
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -35,34 +32,44 @@ def main():
         ],
         dim=0,
     )
+    if not USE_TARGET_PARTICLES:
+        
+        uni_track_info, inv_idx1, n_matched_hits = torch.unique(
+            hit_track_info, dim=1, return_counts=True, return_inverse=True
+        )
+        match_mask = (uni_track_info[0] >= 0) & (n_matched_hits / uni_track_info[2] > 0.5)
+        matched_track_particle_id = uni_track_info[1][
+            match_mask
+        ] 
+        matched_track_label_id = uni_track_info[0][
+            match_mask
+        ]
+        event.matched_track_label_id = matched_track_label_id
+        event.matched_track_particle_id = matched_track_particle_id
+        event.hit_match_mask = match_mask[inv_idx1]
+        event.hit_matched_track_particle_id = torch.where(event.hit_match_mask, hit_track_info[1], 0)
     
-    uni_track_info, inv_idx1, n_matched_hits = torch.unique(
-        hit_track_info, dim=1, return_counts=True, return_inverse=True
-    )
-    match_mask = (uni_track_info[0] >= 0) & (n_matched_hits / uni_track_info[2] > 0.5)
-    matched_track_particle_id = uni_track_info[1][
-        match_mask
-    ] 
-    matched_track_label_id = uni_track_info[0][
-        match_mask
-    ]
-    event.matched_track_label_id = matched_track_label_id
-    event.matched_track_particle_id = matched_track_particle_id
-    event.hit_match_mask = match_mask[inv_idx1]
-    event.hit_matched_track_particle_id = torch.where(event.hit_match_mask, hit_track_info[1], 0)
-    
-    # hit_target_track_info = hit_track_info[:, event.hit_target_mask]
-    # uni_target_track_info, inv_idx2, n_matched_target_hits = torch.unique(
-    #     hit_target_track_info, dim=1, return_counts=True, return_inverse=True
-    # )
-    # matched_target_tracks = uni_target_track_info[
-    #     [0, 1, 3]
-    # ][
-    #     :,
-    #     (uni_target_track_info[0] >= 0)
-    #     & (n_matched_target_hits / uni_target_track_info[2] > 0.5),
-    # ]
-    # matched_target_particles = torch.unique(matched_target_tracks, dim=1)
+    if USE_TARGET_PARTICLES:
+        hit_target_track_info = hit_track_info[:, event.hit_target_mask]
+        uni_target_track_info, inv_idx1, n_matched_target_hits = torch.unique(
+            hit_target_track_info, dim=1, return_counts=True, return_inverse=True
+        )
+        match_mask:torch.Tensor = (uni_target_track_info[0] >= 0) & (n_matched_target_hits / uni_target_track_info[2] > 0.5)
+        # matched_target_tracks = uni_target_track_info[
+        #     0
+        # ] [match_mask] # for broadcasting purposes
+        # matched_target_particles = torch.unique(matched_target_tracks, dim=1)
+        matched_track_particle_id = uni_target_track_info[1][
+            match_mask
+        ] 
+        matched_track_label_id = uni_target_track_info[0][
+            match_mask
+        ]
+        
+        event.matched_target_track_label_id = matched_track_label_id
+        event.matched_track_particle_id = matched_track_particle_id
+        event.hit_match_mask = match_mask[inv_idx1]
+        event.hit_matched_track_particle_id = torch.where(event.hit_match_mask, hit_track_info[1], 0)
     
     # remap matched_target particles to hit
     # print(f"{hit_track_info.shape=}")
@@ -91,6 +98,7 @@ def plot(data, plot_ground_truth=False):
     else:
         hit_particle_ids = data['hit_matched_track_particle_id'].cpu().numpy()
     hit_bitmasks = [hit_particle_ids == id for id in selected_particle_ids]
+    i = 0
     for pid, hit_bitmask in zip(selected_particle_ids, hit_bitmasks):
         print(f"DEBUG: Plotting partcle id {pid}")
         # assert np.sum(hit_bitmask.astype(int)) != 0, np.sum(hit_bitmask.astype(int))
@@ -103,11 +111,16 @@ def plot(data, plot_ground_truth=False):
         square_distance:np.ndarray = xs ** 2 + ys ** 2 + zs ** 2
         sorted_idxs = square_distance.argsort()
         plt.plot(xs[sorted_idxs], ys[sorted_idxs])
-        plt.scatter(xs, ys)
+        plt.scatter(xs, ys, color='red')
+        i += 1
             
-    fp = os.path.join(get_realpath(), 'tracks.png')
+    fp = os.path.join(f'tracks{("_target" if USE_TARGET_PARTICLES else "")}.png')
     plt.savefig(fp)
     print("INFO: Saved figure to " + fp)
+
+def export_path_file(path, data) -> bool:
+    '''Export the data to a file at the given path'''
+    ...
 
 if __name__ == '__main__': main()
 
