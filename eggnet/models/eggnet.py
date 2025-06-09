@@ -105,6 +105,18 @@ class EggNet(nn.Module):
                 for i in range(1 if hparams["recurrent"] else (hparams["n_iters"] + 1))
             ]
         )
+        
+        if hparams.get("predict_track_parameters"):
+            self.parameter_decoder = make_mlp(
+                input_size=hparams["node_rep_dim"],
+                sizes=[hparams["parameter_decoder_hidden"]] 
+                * (hparams["n_parameter_decoder_layers"] - 1)
+                + [hparams["parameter_output_dim"]],
+                layer_norm=hparams["parameter_layernorm"],
+                batch_norm=hparams["parameter_batchnorm"],
+                hidden_activation=hparams["parameter_hidden_activation"],
+                output_activation=hparams["parameter_output_activation"]
+            )
 
         if hparams.get("node_filter") or hparams.get("output_node_score"):
             self.node_filters = nn.ModuleList(
@@ -202,8 +214,12 @@ class EggNet(nn.Module):
 
         if self.hparams.get("checkpoint", False):
             batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
+            if self.hparams.get("predict_track_parameters"):
+                batch.hit_parameters = checkpoint(self.parameter_decoder, x, use_reentrant=False)
         else:
             batch.hit_embedding = self.node_decoders[-1](x)
+            if self.hparams.get("predict_track_parameters"):
+                batch.hit_parameters = self.parameter_decoder(x)
         if self.hparams["embedding_norm"]:
             batch.hit_embedding = F.normalize(batch.hit_embedding)
         if self.hparams.get("output_node_score"):
@@ -215,6 +231,9 @@ class EggNet(nn.Module):
                 )
             else:
                 batch.hit_score = self.node_filters[-1](x)
+        if self.hparams.get("predict_track_parameters"):
+            batch.hit_parameters = batch.hit_parameters.squeeze(1)
+            return batch.hit_embedding, batch.hit_parameters
         return batch.hit_embedding
         # if self.hparams.get("node_filter"):
         #     return x, filter_node_list

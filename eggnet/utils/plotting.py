@@ -216,3 +216,46 @@ def plot_computing_time(time_data, eval_config):
         "Finish plotting. Find the plot at"
         f' {os.path.join(eval_config["output_dir"], "inference_time.png")}'
     )
+
+def plot_hit_parameter_prediction_accuracy(data, eval_config, filename="hit_parameter_pred_acc.png"):
+    """
+    Plot the track parameter prediction accuracy 
+    """
+    event = data.get(0)
+    if eval_config.get("trackML_data"):
+        atl.ATLAS = "TrackML Dataset"
+
+    base_subtext = (
+        (
+            r"$\sqrt{s}=14$TeV, $t \bar{t}$, $\langle \mu \rangle = 200$, primaries"
+            r" $t \bar{t}$ and soft interactions) " + "\n"
+            r"$p_T > 1$GeV, $|\eta| < 4$" + "\n"
+        )
+        if not eval_config.get("trackML_data")
+        else r"$p_T > 1$GeV" + "\n"
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(event.hit_parameters.cpu(), event.get("hit_charge_pt_ratio").cpu(), s=2, color="black")
+    ax.set_xlabel("Hit parameters", ha="right", x=0.95, fontsize=14)
+    ax.set_ylabel("Hit charge pt ratio", ha="right", y=0.95, fontsize=14)
+    ax.plot(
+        [event.hit_parameters.min(), event.hit_parameters.max()],
+        [event.get("hit_charge_pt_ratio").min(), event.get("hit_charge_pt_ratio").max()],
+        color="red",
+        linestyle="--",
+        label="Ideal prediction",
+    )
+    plt.tight_layout()
+
+    # Save the plot
+    atlasify(
+        atlas=True if eval_config.get("trackML_data") else "Internal",
+        subtext=base_subtext + "Track parameter prediction loss",
+    )
+    fig.savefig(os.path.join(eval_config["output_dir"], filename))
+
+    print(
+        "Finish plotting. Find the plot at"
+        f' {os.path.join(eval_config["output_dir"], filename)}'
+    )
