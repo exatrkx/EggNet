@@ -24,7 +24,9 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     eval_config["output_dir"] = config["output_dir"]
 
     base_model = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))(config)
-    base_model.setup(stage="test", datasets=[dataset])
+    # base_model.setup(stage="test", datasets=[dataset]) # BUG: Doesn't work
+    base_model.datasets = dataset
+    base_model.setup(stage="test")
     data = getattr(base_model, dataset)
 
     eps_data = pd.DataFrame({
