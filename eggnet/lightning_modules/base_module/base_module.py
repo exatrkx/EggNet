@@ -29,7 +29,7 @@ class BaseModule(LightningModule):
     #BUG: `setup` is called automatically by lightning so datasets and dataset_path will always be None
     def setup(self, stage="fit"):
         # dataset path must be passed by state as well as `datasets`
-        datasets = getattr(self, "datasets")
+        datasets = getattr(self, "datasets", None)
         if stage == 'predict':
             input_dir = getattr(self, "input_dir", None)
         if datasets is None:
