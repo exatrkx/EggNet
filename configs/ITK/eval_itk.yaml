@@ -4,6 +4,12 @@ target_tracks:
 
 trackML_data: False
 pT_unit: MeV
-plot_eta: True
+
+plot_eta: True 
+plot_computing_time: True
+plot_eff_vs_eps: True
+plot_eff_fixed_eps: True
+plot_parameter_predict: False
+
 
 eps: 0.1
