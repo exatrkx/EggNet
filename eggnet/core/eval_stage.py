@@ -29,7 +29,10 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     base_model.datasets = dataset
     base_model.setup(stage="test")
     data = getattr(base_model, dataset)
-    if any([eval_config.get(key, False) for key in eval_config.keys() if 'eps' in key]):
+    plot_computing_time_bool = eval_config.get("plot_computing_time", False)
+    plot_eps_bool = any([eval_config.get(key, False) for key in eval_config.keys() if ('eps' in key and 'plot' in key)])
+    
+    if plot_eps_bool:
         eps_data = pd.DataFrame({
             "eps": np.arange(0.05, 0.51, 0.05),
             "n_particles": 0,
@@ -39,7 +42,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             "n_matched_target_tracks": 0,
             "n_tracks": 0,
         })
-    if eval_config.get("plot_computing_time", False):
+    if plot_computing_time_bool:
         time_data = pd.DataFrame({
             "num_nodes": [],
             "eggnet": [],
@@ -59,41 +62,41 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         eta_bins = np.linspace(-4, 4)
         particles_eta_hist = np.histogram([], bins=eta_bins)[0]
         matched_target_particles_eta_hist = np.histogram([], bins=eta_bins)[0]
+    # Calculate EPS data only if we need it, since it takes a while to load all the events into memory
+    if plot_computing_time_bool or plot_eps_bool:
+        for event in tqdm(data):
+            event = event.to(accelerator)
+            if plot_eps_bool:
+                for eps_i in eps_data.eps:
+                    eps_data_i, particles_pt_hist_i, matched_target_particles_pt_hist_i, particles_eta_hist_i, matched_target_particles_eta_hist_i = cluster_and_match(event, eps_i, eval_config, time_yes=True if eps_i == eval_config["eps"] else False)
 
-    for event in tqdm(data):
-        event = event.to(accelerator)
-        
-        if any([eval_config.get(key, False) for key in eval_config.keys() if 'eps' in key]):
-            for eps_i in eps_data.eps:
-                eps_data_i, particles_pt_hist_i, matched_target_particles_pt_hist_i, particles_eta_hist_i, matched_target_particles_eta_hist_i = cluster_and_match(event, eps_i, eval_config, time_yes=True if eps_i == eval_config["eps"] else False)
+                    eps_data[eps_data.eps == eps_i] = eps_data[eps_data.eps == eps_i].to_numpy() + eps_data_i.to_numpy()
 
-                eps_data[eps_data.eps == eps_i] = eps_data[eps_data.eps == eps_i].to_numpy() + eps_data_i.to_numpy()
-
-                if eps_i == eval_config["eps"]:
-                    particles_pt_hist += particles_pt_hist_i
-                    matched_target_particles_pt_hist += matched_target_particles_pt_hist_i
-                    if eval_config.get("plot_eta", True):
-                        particles_eta_hist += particles_eta_hist_i
-                        matched_target_particles_eta_hist += matched_target_particles_eta_hist_i
-
-        if eval_config.get("plot_computing_time", False):
-            time_data = pd.concat([time_data, pd.DataFrame({
-                "num_nodes": [event["num_nodes"].cpu()],
-                "eggnet": [event["BaseModule.forward"]],
-                "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
-                "dbscan": [event["cluster"]]
-                }
-        )])
+                    if eps_i == eval_config["eps"]:
+                        particles_pt_hist += particles_pt_hist_i
+                        matched_target_particles_pt_hist += matched_target_particles_pt_hist_i
+                        if eval_config.get("plot_eta", True):
+                            particles_eta_hist += particles_eta_hist_i
+                            matched_target_particles_eta_hist += matched_target_particles_eta_hist_i
+                        
+            if plot_computing_time_bool:
+                time_data = pd.concat([time_data, pd.DataFrame({
+                    "num_nodes": [event["num_nodes"].cpu()],
+                    "eggnet": [event["BaseModule.forward"]],
+                    "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
+                    "dbscan": [event["cluster"]]
+                    }
+            )])
 
     # check metric!!
-    if any([eval_config.get(key, False) for key in eval_config.keys() if 'eps' in key]):
+    if plot_eps_bool:
         eps_data["eff"] = eps_data.n_matched_target_particles / eps_data.n_particles
         eps_data["dup"] = (
             eps_data.n_matched_target_tracks - eps_data.n_matched_target_particles
         ) / eps_data.n_matched_target_particles
         eps_data["fak"] = (eps_data.n_tracks - eps_data.n_matched_tracks) / eps_data.n_matched_particles
 
-    if eval_config.get("plot_computing_time", False):
+    if plot_computing_time_bool:
         time_data["gnn"] = time_data["eggnet"] - time_data["knn"]
         time_data["total"] = time_data["eggnet"] + time_data["dbscan"]
     if eval_config.get("plot_eff_vs_eps", False):
@@ -104,7 +107,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         plot_eff_fixed_eps(matched_target_particles_eta_hist, particles_eta_hist, eps_data, eval_config, eta_bins, r"$\eta$", logx=False, filename="track_efficiency_eta.png")
     if eval_config.get("plot_parameter_predict", False):
         plot_hit_parameter_prediction_accuracy(data, config, eval_config)
-    if eval_config.get("plot_computing_time", False):
+    if plot_computing_time_bool:
         plot_computing_time(time_data, eval_config)
 
 
