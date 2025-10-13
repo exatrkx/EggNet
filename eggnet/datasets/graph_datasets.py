@@ -33,6 +33,9 @@ class GraphDataset(Dataset):
             self.input_dir, self.data_name, self.num_events
         )
         self.input_paths.sort()  # We sort here for reproducibility
+        print("INFO: Instatiated GraphDataset(\ninput_dir={}, \ndata_name={}, \nnum_events={}, \nstage={})".format(
+            self.input_dir, self.data_name, self.num_events, self.stage)
+        )
 
     def len(self):
         return len(self.input_paths)

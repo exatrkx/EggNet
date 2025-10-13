@@ -12,6 +12,14 @@ import matplotlib.pyplot as plt
 import enum
 from eggnet.utils.mapping import map_tracks_to_nodes
 
+### NOTE: To get the (x, y, z) or (r, phi, psi) components of the momentum or charge momentum ratio,
+###       just add the coordinate after the datakey seperated by an underscore. 
+# (TRACK_..._DATAKEY_x)
+# (TRACK_..._DATAKEY_y)
+# (TRACK_..._DATAKEY_z)
+
+XYZ_COORDINATES = ('x', 'y', 'z')
+CYLINDRICAL_COORDINATES = ('r', 'phi', 'psi') #TODO Future coordinate systems
 # New event keys
 TRACK_CHARGE_DATAKEY = 'track_particle_charge'
 HIT_CHARGE_DATAKEY = 'hit_particle_charge'
@@ -39,14 +47,18 @@ def main():
     config = load_config(config_filepath)
     
     assert 'input_dir' in config
-    assert 'preprocess_output_dir' in config
+    assert 'output_dir' in config
 
     input_dir = config.get('input_dir')
+    if not os.path.isdir(input_dir):
+        raise NameError(f"Path {input_dir} does not exist")
     input_trainset_path = input_dir + os.sep + 'trainset'
     input_testset_path = input_dir + os.sep + 'testset'
     input_valset_path = input_dir + os.sep + 'valset'
     
-    output_dir = config.get('preprocess_output_dir')
+    output_dir = config.get('output_dir')
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir, mode=0o661)
     output_trainset_path = output_dir + os.sep + 'trainset'
     output_testset_path = output_dir + os.sep + 'testset'
     output_valset_path = output_dir + os.sep + 'valset'
@@ -121,75 +133,81 @@ def subroutine(file, input_dir, output_dir, config, args):
     # save_distribution_stats_figure(get_realpath(), momentum_tensor, "momentum")
     # exit()
     if config.get('add_charge_momentum_data'):
-        if TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY in data_object.keys() and not args.force:
-            if args.verbose:
-                print(f"INFO: Skipping event-{data_object.event_id} (track charge/momentum ratio already exists)")
-        else:
-            pdgids = data_object.get(TRACK_PDGID_DATAKEY)
-            if pdgids is None:
-                raise KeyError(f"ERROR: PdgID not specified in PyG file (event-{data_object.event_id})")
-            charges = [] # temporarily store in python object before converting to torch tensor
-            for i, id in enumerate(pdgids):
-                charge = particle.pdgid.charge(particle.PDGID(id))
-                charges.append(charge)
-            charges_tensor = torch.Tensor(charges)
-            if config.get('add_charge_data'):
-                data_object[TRACK_CHARGE_DATAKEY] = charges_tensor
-            # Compute charge/momentum ratio
-            hit_momentum_tensor:torch.Tensor = data_object[TRACK_MOMENTUM_DATAKEY]
-            # assert momentum_tensor.size() == charges_tensor.size()
-            # assert momentum_tensor.size() == data_object[CHARGE_DATAKEY].size()
-            charge_pt_ratio = charges_tensor / hit_momentum_tensor
-            assert isinstance(charge_pt_ratio, torch.Tensor), f"{type(charge_pt_ratio)=}"
-            assert charge_pt_ratio.size() == data_object["track_particle_pt"].size()
-            data_object[TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY] = charge_pt_ratio
-        # data_object[CHARGE_MOMENTUM_RATIO_DATAKEY+"_x"] = charge_pt_ratio
-        # data_object[CHARGE_MOMENTUM_RATIO_DATAKEY+"_y"] = charge_pt_ratio
-        # data_object[CHARGE_MOMENTUM_RATIO_DATAKEY+"_z"] = charge_pt_ratio
-    if config.get('add_hit_charge_momentum_data'):
-        if HIT_CHARGE_MOMENTUM_RATIO_DATAKEY in data_object.keys() and not args.force:
-            if args.verbose:
-                print(f"INFO: Skipping event-{data_object.event_id} (hit charge/momentum ratio already exists)")
-        else:
-            # ======= DIRECT CALCULATION OF HIT CHARGE/MOMENTUM RATIO =======
-            hit_pdgids = data_object[HIT_PDGID_DATAKEY]
-            if hit_pdgids is None:
-                raise KeyError(f"ERROR: PdgID not specified in PyG file (event-{data_object.event_id})")
-            hit_charges = [] # temporarily store in python object before converting to torch tensor
-            for i, id in enumerate(hit_pdgids):
-                id = id.item() if isinstance(id, torch.Tensor) else id
-                if id != id: # id is NaN => Fake hit -- must account for this
-                    # We can assign a fake hit a charge of 0
-                    charge = 0.0
-                else:
+        def add_track_qpt_ratio(suffix=''):
+            if TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY+suffix in data_object.keys() and not args.force:
+                if args.verbose:
+                    print(f"INFO: Skipping event-{data_object.event_id} (track charge/momentum ratio already exists)")
+            else:
+                pdgids = data_object.get(TRACK_PDGID_DATAKEY)
+                if pdgids is None:
+                    raise KeyError(f"ERROR: PdgID not specified in PyG file (event-{data_object.event_id})")
+                charges = [] # temporarily store in python object before converting to torch tensor
+                for i, id in enumerate(pdgids):
                     charge = particle.pdgid.charge(particle.PDGID(id))
-                hit_charges.append(charge)
-            hit_charges_tensor = torch.Tensor(hit_charges)
-            if config.get('add_charge_data'):
-                data_object[HIT_CHARGE_DATAKEY] = hit_charges_tensor
-            hit_momentum_tensor:torch.Tensor = data_object[HIT_MOMENTUM_DATAKEY]
-            hit_charge_pt_ratio = hit_charges_tensor / hit_momentum_tensor
-            assert hit_charge_pt_ratio.size() == data_object["hit_particle_pt"].size(), hit_charge_pt_ratio.size()
-
-            # ======== IDX MAPPING TECHNIQUE (BUGGY) =======
-            # idx_mapping = {v.item(): i for i, v in enumerate(data_object["track_particle_id"])}
-            # idx_mapping[0] = 0 # The '0' particle ID represents either a fake or a non-accounted-for particle. For simplicity, let these be zero
-            # indicies = torch.tensor(
-            #     [round(idx_mapping.get(v.item(), 0)) for v in data_object["hit_particle_id"]]
-            #     ) # BUG: The particle ID in hit_particle_id is not guaranteed to be in track_particle_id. Why?
-            # hit_charge_pt_ratio = data_object.get(
-            #         CHARGE_MOMENTUM_RATIO_DATAKEY
-            #     )[indicies]
+                    charges.append(charge)
+                charges_tensor = torch.Tensor(charges)
+                if config.get('add_charge_data'):
+                    data_object[TRACK_CHARGE_DATAKEY] = charges_tensor
+                # Compute charge/momentum ratio
+                hit_momentum_tensor:torch.Tensor = data_object[TRACK_MOMENTUM_DATAKEY+suffix]
+                # assert momentum_tensor.size() == charges_tensor.size()
+                # assert momentum_tensor.size() == data_object[CHARGE_DATAKEY].size()
+                charge_pt_ratio = charges_tensor / hit_momentum_tensor
+                assert isinstance(charge_pt_ratio, torch.Tensor), f"{type(charge_pt_ratio)=}"
+                assert charge_pt_ratio.size() == data_object["track_particle_pt"].size()
+                data_object[TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY+suffix] = charge_pt_ratio
+        add_track_qpt_ratio()
+        for coord in XYZ_COORDINATES:
+            add_track_qpt_ratio('_' + coord)
             
-            # ======== EDGE MAPPING TECHINIQUE (BUGGY) =======
-            # hit_charge_pt_ratio = map_tracks_to_nodes(
-            #     charge_pt_ratio,
-            #     data_object.get("track_edges"),
-            #     num_nodes=data_object.num_nodes
-            # ) # BUG: This is not guaranteed to be the same size as hit_particle_id (ex. size 301619 != 301626)
-            assert hit_charge_pt_ratio is not None, f"Hit charge/momentum ratio not found in event-{data_object.event_id}"
-            assert hit_charge_pt_ratio.size() == data_object.hit_particle_id.size(), f"{hit_charge_pt_ratio.size()} != {data_object.hit_particle_id.size()}"
-            data_object[HIT_CHARGE_MOMENTUM_RATIO_DATAKEY] = hit_charge_pt_ratio
+    if config.get('add_hit_charge_momentum_data'):
+        def add_hit_qpt_ratio(suffix=''):
+            if HIT_CHARGE_MOMENTUM_RATIO_DATAKEY+suffix in data_object.keys() and not args.force:
+                if args.verbose:
+                    print(f"INFO: Skipping event-{data_object.event_id} (hit charge/momentum ratio already exists)")
+            else:
+                # ======= DIRECT CALCULATION OF HIT CHARGE/MOMENTUM RATIO =======
+                hit_pdgids = data_object[HIT_PDGID_DATAKEY]
+                if hit_pdgids is None:
+                    raise KeyError(f"ERROR: PdgID not specified in PyG file (event-{data_object.event_id})")
+                hit_charges = [] # temporarily store in python object before converting to torch tensor
+                for i, id in enumerate(hit_pdgids):
+                    id = id.item() if isinstance(id, torch.Tensor) else id
+                    if id != id: # id is NaN => Fake hit -- must account for this
+                        # We can assign a fake hit a charge of 0
+                        charge = 0.0
+                    else:
+                        charge = particle.pdgid.charge(particle.PDGID(id))
+                    hit_charges.append(charge)
+                hit_charges_tensor = torch.Tensor(hit_charges)
+                if config.get('add_charge_data'):
+                    data_object[HIT_CHARGE_DATAKEY] = hit_charges_tensor
+                hit_momentum_tensor:torch.Tensor = data_object[HIT_MOMENTUM_DATAKEY+suffix]
+                hit_charge_pt_ratio = hit_charges_tensor / hit_momentum_tensor
+                assert hit_charge_pt_ratio.size() == data_object["hit_particle_pt"].size(), hit_charge_pt_ratio.size()
+
+                # ======== IDX MAPPING TECHNIQUE (BUGGY) =======
+                # idx_mapping = {v.item(): i for i, v in enumerate(data_object["track_particle_id"])}
+                # idx_mapping[0] = 0 # The '0' particle ID represents either a fake or a non-accounted-for particle. For simplicity, let these be zero
+                # indicies = torch.tensor(
+                #     [round(idx_mapping.get(v.item(), 0)) for v in data_object["hit_particle_id"]]
+                #     ) # BUG: The particle ID in hit_particle_id is not guaranteed to be in track_particle_id. Why?
+                # hit_charge_pt_ratio = data_object.get(
+                #         CHARGE_MOMENTUM_RATIO_DATAKEY
+                #     )[indicies]
+                
+                # ======== EDGE MAPPING TECHINIQUE (BUGGY) =======
+                # hit_charge_pt_ratio = map_tracks_to_nodes(
+                #     charge_pt_ratio,
+                #     data_object.get("track_edges"),
+                #     num_nodes=data_object.num_nodes
+                # ) # BUG: This is not guaranteed to be the same size as hit_particle_id (ex. size 301619 != 301626)
+                assert hit_charge_pt_ratio is not None, f"Hit charge/momentum ratio not found in event-{data_object.event_id}"
+                assert hit_charge_pt_ratio.size() == data_object.hit_particle_id.size(), f"{hit_charge_pt_ratio.size()} != {data_object.hit_particle_id.size()}"
+                data_object[HIT_CHARGE_MOMENTUM_RATIO_DATAKEY+suffix] = hit_charge_pt_ratio
+    add_hit_qpt_ratio() 
+    for coord in XYZ_COORDINATES:
+        add_hit_qpt_ratio('_' + coord)
     save_pyg_data(data_object, os.path.join(output_dir), data_object.event_id)
     validate_pyg_data(output_dir, data_object.event_id)
 

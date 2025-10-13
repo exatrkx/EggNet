@@ -5,7 +5,7 @@ import pandas as pd
 
 from eggnet import lightning_modules
 from eggnet.utils.cluster import cluster_and_match
-from eggnet.utils.plotting import plot_eff_vs_eps, plot_eff_fixed_eps, plot_computing_time, plot_hit_parameter_prediction_accuracy
+from eggnet.utils.plotting import *
 from eggnet.utils.slurm import submit_to_slurm
 
 
@@ -31,7 +31,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     data = getattr(base_model, dataset)
     plot_computing_time_bool = eval_config.get("plot_computing_time", False)
     plot_eps_bool = any([eval_config.get(key, False) for key in eval_config.keys() if ('eps' in key and 'plot' in key)])
-    
+
     if plot_eps_bool:
         eps_data = pd.DataFrame({
             "eps": np.arange(0.05, 0.51, 0.05),
@@ -78,7 +78,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                         if eval_config.get("plot_eta", True):
                             particles_eta_hist += particles_eta_hist_i
                             matched_target_particles_eta_hist += matched_target_particles_eta_hist_i
-                        
+
             if plot_computing_time_bool:
                 time_data = pd.concat([time_data, pd.DataFrame({
                     "num_nodes": [event["num_nodes"].cpu()],
@@ -109,7 +109,57 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         plot_hit_parameter_prediction_accuracy(data, config, eval_config)
     if plot_computing_time_bool:
         plot_computing_time(time_data, eval_config)
-
+    if eval_config.get("plot_resolution_PT", False):
+        if eval_config.get("plot_resolution_PT_x", None):
+            x_range = eval_config.get("plot_resolution_PT_x", None)
+        else:
+            x_range = None
+        if len(x_range) == 0: 
+            x_range = None
+        if x_range:
+            if all([isinstance(x, list) for x in x_range]):
+                for x in x_range:
+                    plot_binned_std_of_residuals_PT(
+                        data,
+                        config,
+                        eval_config,
+                        filename=f"binned_std_of_residuals_PT_{x[0]}to{x[1]}.png",
+                        num_bins=50,
+                        x_range=x
+                    )
+            else:
+                plot_binned_std_of_residuals_PT(
+                    data,
+                    config,
+                    eval_config,
+                    filename="binned_std_of_residuals_PT.png",
+                    num_bins=50,
+                    x_range=x_range
+                )
+    if eval_config.get("plot_resolution_ETA", False):
+        plot_binned_std_of_residuals_ETA(
+            data,
+            config,
+            eval_config,
+            filename="binned_std_of_residuals_ETA.png",
+            num_bins=50,
+            
+        )
+    if eval_config.get("plot_resolution_confidence", False):
+        plot_binned_std_of_residuals_confidence(
+            data,
+            config,
+            eval_config,
+            filename="binned_std_of_residuals_confidence.png",
+            num_bins=50,
+        )
+    if eval_config.get("plot_binned_hit_param_pred_acc", False):
+        plot_binned_hit_parameter_prediction_accuracy(
+            data,
+            config,
+            eval_config,
+            num_bins=5
+        )
 
 def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset):
 

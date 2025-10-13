@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch.functional as F
 
 
 def make_mlp(
@@ -17,7 +18,11 @@ def make_mlp(
     """Construct an MLP with specified fully-connected layers."""
     hidden_activation = getattr(nn, hidden_activation)
     if output_activation is not None:
-        output_activation = getattr(nn, output_activation)
+        output_activation = getattr(nn, output_activation, None)
+        if output_activation is None:
+            output_activation = getattr(F, output_activation, None)
+            if output_activation is None:
+                raise ValueError(f"Unknown output activation function: {output_activation}")
     layers = []
     n_layers = len(sizes)
     sizes = [input_size] + sizes
