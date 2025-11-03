@@ -65,3 +65,4 @@ max_epochs: 200
 metric_to_monitor: val_eff
 metric_mode: max
 # num_workers: [0, 0, 0]
+double_metric_learning: False

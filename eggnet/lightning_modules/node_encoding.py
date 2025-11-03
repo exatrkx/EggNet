@@ -12,6 +12,8 @@ class NodeEncoding(BaseModule):
 
         if self.hparams.get("node_filter"):
             batch.hit_embedding, batch.filter_node_list = self(batch)
+        elif self.hparams.get("double_metric_learning"):
+            batch.src_embedding, batch.tgt_embedding = self(batch)
         else:
             batch.hit_embedding = self(batch)
 

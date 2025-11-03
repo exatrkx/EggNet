@@ -44,8 +44,8 @@ def hinge_loss(
     else:
         return (loss * w * f).sum() / w.sum()
 
-
-def get_distances(node_embedding, edges, filter_node_list=None):
+def get_distances(node_embedding, edges, filter_node_list=None, use_double_metric_learning=False):
+    # Note: node_embedding is expected to be a tuple (tgt_emb, src_emb) if `use_double_metric_learning` is True
     if filter_node_list is not None:
         res = torch.full((edges.shape[1],), 2.0, device=node_embedding.device)
         node_map = torch.full(
@@ -56,8 +56,14 @@ def get_distances(node_embedding, edges, filter_node_list=None):
         )
         edge_mask = torch.isin(edges, filter_node_list).all(dim=0)
         edges = node_map[edges.T[edge_mask].T]
-    reference = node_embedding[edges[1]]
-    neighbors = node_embedding[edges[0]]
+    if use_double_metric_learning:
+        if not isinstance(node_embedding, tuple) or len(node_embedding) != 2:
+            raise ValueError("node_embedding must be a tuple of (tgt_emb, src_emb) when use_double_metric_learning is True.")
+        reference = node_embedding[0][edges[1]] # src embedding
+        neighbors = node_embedding[1][edges[0]] # tgt embedding
+    else:
+        reference = node_embedding[edges[1]]
+        neighbors = node_embedding[edges[0]]
 
     try:  # This can be resource intensive, so we chunk it if it fails
         d = torch.sum((reference - neighbors) ** 2, dim=-1)

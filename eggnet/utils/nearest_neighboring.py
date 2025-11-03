@@ -7,7 +7,7 @@ import faiss
 from eggnet.utils.timing import time_function
 
 
-def cu_knn_graph(x, k, loop=False, cosine=False, r=None):
+def cu_knn_graph(x, k, loop=False, cosine=False, r=None, use_double_metric_learning=False):
     """
     An function equivalent to knn_graph but based on cuml.neighbors.NearestNeighbors with GPU implementation.
     In addition, the function supports specification of a max radius (the radius cut is applied after k neighbors are found).
@@ -15,10 +15,16 @@ def cu_knn_graph(x, k, loop=False, cosine=False, r=None):
     if not loop:
         k += 1
     with cupy.cuda.Device(x.device.index):
-        x_cu = cupy.from_dlpack(x.detach())
         knn = NearestNeighbors(n_neighbors=k)
-        knn.fit(x_cu)
-        d, graph_idxs = knn.kneighbors(x_cu)
+        x_cu = cupy.from_dlpack(x.detach())
+        if use_double_metric_learning:
+            src = x_cu[0]
+            tgt = x_cu[1]
+            knn.fit(src)
+            d, graph_idxs = knn.kneighbors(tgt)
+        else: 
+            knn.fit(x_cu)
+            d, graph_idxs = knn.kneighbors(x_cu)
         graph_idxs = torch.from_dlpack(graph_idxs)
         if r:
             d = torch.from_dlpack(d)
@@ -45,16 +51,23 @@ class cu_knn():
         self.knn = NearestNeighbors()
 
     @time_function
-    def get_graph(self, batch, k, r=None, node_filter=False, loop=False):
+    def get_graph(self, batch, k, r=None, node_filter=False, loop=False, use_double_metric_learning=False):
         if not loop:
             k += 1
-        with cupy.cuda.Device(batch.hit_embedding.device.index):
-            x_cu = cupy.from_dlpack(batch.hit_embedding.detach())
-            self.knn.fit(x_cu)
-            d, graph_idxs = self.knn.kneighbors(x_cu, k)
-            graph_idxs = torch.from_dlpack(graph_idxs)
-            if r:
-                d = torch.from_dlpack(d)
+        if use_double_metric_learning:
+            with cupy.cuda.Device(batch.target_embedding.device.index): 
+                tgt_cu = cupy.from_dlpack(batch.target_embedding.detach())
+                src_cu = cupy.from_dlpack(batch.source_embedding.detach())
+                self.knn.fit(src_cu)
+                d, graph_idxs = self.knn.kneighbors(tgt_cu)
+        else:
+            with cupy.cuda.Device(batch.hit_embedding.device.index):
+                x_cu = cupy.from_dlpack(batch.hit_embedding.detach())
+                self.knn.fit(x_cu)
+                d, graph_idxs = self.knn.kneighbors(x_cu)
+                graph_idxs = torch.from_dlpack(graph_idxs)
+        if r:
+            d = torch.from_dlpack(d)
         ind = (
             torch.arange(graph_idxs.shape[0], device=batch.hit_embedding.device)
             .unsqueeze(1)
@@ -79,7 +92,9 @@ class faiss_knn:
         self.flat_config = faiss.GpuIndexFlatConfig()
 
     @time_function
-    def get_graph(self, batch, k, r=None, node_filter=False, loop=False):
+    def get_graph(self, batch, k, r=None, node_filter=False, loop=False, use_double_metric_learning=False):
+        if use_double_metric_learning:
+            raise NotImplementedError("faiss_knn does not support use_double_metric_learning yet.")
         if not loop:
             k += 1
         self.flat_config.device = batch.hit_embedding.device.index

@@ -70,3 +70,5 @@ metric_to_monitor: val_eff
 metric_mode: max
 checkpoint: True
 # num_workers: [0, 0, 0]
+
+double_metric_learning: False # Set to use DML

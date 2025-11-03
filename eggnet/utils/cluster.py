@@ -9,6 +9,7 @@ from eggnet.utils.timing import time_function
 
 @time_function
 def cluster(event, eps, min_samples):
+    # TYDO Needs to be replaced for directed graphs
     """
     Perform clustering (currently only DBSCAN is supported).
     A track label for each hit will be written to the pyg object.
@@ -17,6 +18,7 @@ def cluster(event, eps, min_samples):
     clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
     # clusterer = cuml.cluster.hdbscan.HDBSCAN(min_cluster_size=3, allow_single_cluster=True, cluster_selection_epsilon=0)
     hit_label = clusterer.fit_predict(event.hit_embedding)
+    assert hit_label.shape[0] == event.hit_embedding.shape[0], f"Clustering failed: number of labels does not match number of hits. Got {hit_label.shape[0]} labels for {event.hit_embedding.shape[0]} hits."
     event.hit_label = torch.as_tensor(hit_label, device=event.hit_embedding.device)
 
 

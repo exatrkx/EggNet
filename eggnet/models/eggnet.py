@@ -124,6 +124,25 @@ class EggNet(nn.Module):
                     )
                 ]
             )
+        if hparams.get("double_metric_learning"):
+            self.tgt_decoder = make_mlp(
+                hparams["node_rep_dim"],
+                [hparams["decoder_hidden"]] * (hparams["n_decoder_layers"] - 1)
+                + [hparams["node_pspace_dim"]],
+                layer_norm=hparams["layernorm"],
+                batch_norm=hparams["batchnorm"],
+                hidden_activation=hparams["hidden_activation"],
+                output_activation=hparams["output_activation"],
+            ) 
+            self.src_decoder = make_mlp(
+                hparams["node_rep_dim"],
+                [hparams["decoder_hidden"]] * (hparams["n_decoder_layers"] - 1)
+                + [hparams["node_pspace_dim"]],
+                layer_norm=hparams["layernorm"],
+                batch_norm=hparams["batchnorm"],
+                hidden_activation=hparams["hidden_activation"],
+                output_activation=hparams["output_activation"],
+            )
 
         self.knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
 
@@ -215,7 +234,20 @@ class EggNet(nn.Module):
                 )
             else:
                 batch.hit_score = self.node_filters[-1](x)
-        return batch.hit_embedding
+        if self.hparams.get("double_metric_learning"):
+            if self.hparams.get("checkpoint", False):
+                batch.src_embedding = checkpoint(self.src_decoder, x, use_reentrant=False)
+                batch.tgt_embedding = checkpoint(self.tgt_decoder, x, use_reentrant=False)
+            else:
+                batch.src_embedding = self.src_decoder(x)
+                batch.tgt_embedding = self.tgt_decoder(x)
+            if self.hparams["embedding_norm"]:
+                batch.src_embedding = F.normalize(batch.src_embedding)
+                batch.tgt_embedding = F.normalize(batch.tgt_embedding)
+        if self.hparams.get("double_metric_learning"):
+            return batch.src_embedding, batch.tgt_embedding
+        else:
+            return batch.hit_embedding
         # if self.hparams.get("node_filter"):
         #     return x, filter_node_list
         # else:

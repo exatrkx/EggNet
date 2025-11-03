@@ -138,6 +138,7 @@ class knn_contrastive_loss(nn.Module):
             batch,
             k=k,
             r=self.hparams.get("r_max_train"),
+            use_double_metric_learning=self.hparams.get("use_double_metric_learning", False),
         )
         if node_filter:
             edges = batch.filter_node_list[edges]
@@ -166,4 +167,30 @@ class random_contrastive_loss(nn.Module):
         res["loss"] = hinge_loss(
             batch, edges, margin, node_filter=node_filter, weighting_config=weighting_config, node_score=node_score
         )
+        return res
+
+class DML_loss(nn.Module):
+    """
+    Deep Metric Learning loss
+    """
+    def __init__(self, hparams):
+        raise NotImplementedError()
+        super().__init__()
+
+        self.hparams = hparams
+        self.signal_loss = signal_contrastive_loss(hparams)
+
+    @time_function
+    def forward(self, batch):
+
+        res = {}
+
+        res["signal_loss"] = self.signal_loss(
+            batch,
+            self.hparams["margin"],
+            node_filter=self.hparams.get("node_filter"),
+            weighting_config=self.hparams.get("weighting"),
+        )["loss"]
+        res["loss"] = res["signal_loss"]
+
         return res
