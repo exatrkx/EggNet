@@ -123,7 +123,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                         data,
                         config,
                         eval_config,
-                        filename=f"binned_std_of_residuals_PT_{x[0]}to{x[1]}.png",
+                        filename=f"binned_std_of_residuals_PT.png",
                         num_bins=50,
                         x_range=x
                     )

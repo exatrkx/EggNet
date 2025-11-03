@@ -396,7 +396,11 @@ def plot_binned_std_of_residuals(
         else r"$p_T > 1$GeV" + "\n"
     )
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, axes = plt.subplots(ncols=(2 if plot_statistics else 1), figsize=(8, 6))
+    if not plot_statistics:
+        ax = axes
+    else:
+        ax = axes[0]
     norm_constant:torch.Tensor = event.get("normalization_constant") if config.get("parameter_loss_normalize") else 1
     try:
         norm_constant = norm_constant.squeeze().item()
@@ -425,11 +429,11 @@ def plot_binned_std_of_residuals(
         ])
 
     ax.plot(bin_centers, binned_variance, marker='o', linestyle='-', color='blue')
-    if plot_statistics:
-        ax.plot(bin_centers, binned_n / binned_n.max() * binned_variance.max(), marker='x', linestyle='--', color='orange', label="Normalized counts")
     ax.set_xlabel(bin_datakey, ha="right", x=0.95, fontsize=14)
     ax.set_ylabel(r"$\sigma$ of residuals", ha="right", y=0.95, fontsize=14)
     plt.tight_layout()
+    if plot_statistics:
+        axes[1].plot(bin_centers, binned_n, marker='x', linestyle='--', color='orange', label="Normalized counts")
 
     # Save the plot
     atlasify(
@@ -445,7 +449,7 @@ def plot_binned_std_of_residuals(
             f' {os.path.join(eval_config["output_dir"], filename)}'
         )
     else:
-        return fig, ax
+        return fig, axes
 
 def plot_binned_std_of_residuals_PT(
     data,
