@@ -209,6 +209,7 @@ def plot_computing_time(time_data, eval_config):
         atlas=True if eval_config.get("trackML_data") else "Internal",
         subtext=base_subtext +
         f'Averaged training time per event: {(time_data["total"]).mean():.2f}s',
+        axes=ax
     )
     fig.savefig(os.path.join(eval_config["output_dir"], "inference_time.png"))
 
