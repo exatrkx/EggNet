@@ -105,6 +105,31 @@ class EggNet(nn.Module):
                 for i in range(1 if hparams["recurrent"] else (hparams["n_iters"] + 1))
             ]
         )
+        
+        if hparams.get("predict_track_parameters"):
+            self.parameter_decoder = make_mlp(
+                input_size=hparams["node_rep_dim"],
+                sizes=[hparams["parameter_decoder_hidden"]] 
+                * (hparams["n_parameter_decoder_layers"] - 1)
+                + [hparams["parameter_output_dim"]],
+                layer_norm=hparams["parameter_layernorm"],
+                batch_norm=hparams["parameter_batchnorm"],
+                hidden_activation=hparams["parameter_hidden_activation"],
+                output_activation=hparams["parameter_output_activation"],
+            )
+        if hparams.get("parameter_loss_confidence"):
+            self.parameter_loss_confidence = make_mlp(
+                input_size=hparams["node_rep_dim"],
+                sizes=[hparams["parameter_decoder_hidden"]] 
+                * (hparams["n_parameter_decoder_layers"] - 1)
+                + [hparams["parameter_output_dim"]], # have the same output dimension as the parameter decoder
+                layer_norm=hparams["parameter_layernorm"],
+                batch_norm=hparams["parameter_batchnorm"],
+                hidden_activation=hparams["parameter_hidden_activation"],
+                output_activation=hparams["parameter_confidence_output_activation"], # Confidence should be between 0 and 1 
+                                             # since it coincides with R^2
+            )
+
 
         if hparams.get("node_filter") or hparams.get("output_node_score"):
             self.node_filters = nn.ModuleList(
@@ -202,8 +227,22 @@ class EggNet(nn.Module):
 
         if self.hparams.get("checkpoint", False):
             batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
+            if self.hparams.get("predict_track_parameters"):
+                batch.hit_parameters = checkpoint(self.parameter_decoder, x, use_reentrant=False)
+                if self.hparams.get("parameter_loss_confidence"):
+                    batch.hit_parameter_confidence = checkpoint(
+                        self.parameter_loss_confidence, x, use_reentrant=False
+                    )
         else:
             batch.hit_embedding = self.node_decoders[-1](x)
+            if self.hparams.get("predict_track_parameters"):
+                batch.hit_parameters = self.parameter_decoder(x)
+                if self.hparams.get("parameter_loss_confidence"):
+                    batch.hit_parameter_confidence = self.parameter_loss_confidence(x)
+        if self.hparams.get("predict_track_parameters"):
+            batch.hit_parameters = batch.hit_parameters.squeeze(1) # remove the batch dimension
+            if self.hparams.get("parameter_loss_confidence"):
+                batch.hit_parameter_confidence = batch.hit_parameter_confidence.squeeze(1) # remove the batch dimension
         if self.hparams["embedding_norm"]:
             batch.hit_embedding = F.normalize(batch.hit_embedding)
         if self.hparams.get("output_node_score"):
@@ -215,6 +254,8 @@ class EggNet(nn.Module):
                 )
             else:
                 batch.hit_score = self.node_filters[-1](x)
+        if self.hparams.get("predict_track_parameters"):
+            return batch.hit_embedding, batch.hit_parameters
         return batch.hit_embedding
         # if self.hparams.get("node_filter"):
         #     return x, filter_node_list

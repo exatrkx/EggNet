@@ -77,6 +77,8 @@ Options:
   -n, --num_nodes INTEGER         Number of nodes. Default will be what is
                                   specified in the training config.
   -s, --slurm                   Submit to slurm batch.
+  -dp, --dataset_path TEXT        A path to the dataset to be used for
+                                inference.
   --help                          Show this message and exit.
 ```
 Note that here `TRAINING_CONFIG` should be exactly the same as what was used for the training. The data with the inference results (i.e. node embedding) will be saved to the `output_dir`.

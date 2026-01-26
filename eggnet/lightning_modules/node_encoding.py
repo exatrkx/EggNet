@@ -1,4 +1,5 @@
 import os
+import torch
 
 from .base_module import BaseModule
 from .utils.utils import cluster_eval
@@ -12,6 +13,8 @@ class NodeEncoding(BaseModule):
 
         if self.hparams.get("node_filter"):
             batch.hit_embedding, batch.filter_node_list = self(batch)
+        elif self.hparams.get("predict_track_parameters"):
+            batch.hit_embedding, batch.hit_parameters = self(batch)
         else:
             batch.hit_embedding = self(batch)
 
@@ -20,6 +23,7 @@ class NodeEncoding(BaseModule):
         self.log_dict(
             {f"train_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
             batch_size=1,
+            sync_dist=self.hparams.get("devices", 1) > 1
         )
 
         return res["loss"]
@@ -30,6 +34,8 @@ class NodeEncoding(BaseModule):
         """
         if self.hparams.get("node_filter"):
             batch.hit_embedding, batch.filter_node_list = self(batch)
+        elif self.hparams.get("predict_track_parameters"):
+            batch.hit_embedding, batch.hit_parameters = self(batch)
         else:
             batch.hit_embedding = self(batch)
 
@@ -46,6 +52,7 @@ class NodeEncoding(BaseModule):
                 "val_dup": dup,
             },
             batch_size=1,
+            sync_dist=self.hparams.get("devices", 1) > 1
         )
         # print("validation step end", torch.cuda.max_memory_allocated(device="cuda"))
 
@@ -67,6 +74,8 @@ class NodeEncoding(BaseModule):
 
         if self.hparams.get("node_filter"):
             batch.hit_embedding, batch.filter_node_list = self(batch, time_yes=True)
+        elif self.hparams.get("predict_track_parameters"):
+            batch.hit_embedding, batch.hit_parameters = self(batch, time_yes=True)
         else:
             batch.hit_embedding = self(batch, time_yes=True)
 
