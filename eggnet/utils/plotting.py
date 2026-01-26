@@ -44,7 +44,7 @@ def plot_eff_vs_eps(eps_data, eval_config):
     fig.savefig(os.path.join(eval_config["output_dir"], "track_eff_dbscan_vs_eps.png"))
 
     print(
-        "Finish plotting. Find the plot at"
+        "INFO: Finish plotting. Find the plot at"
         f' {os.path.join(eval_config["output_dir"], "track_eff_dbscan_vs_eps.png")}'
     )
 
@@ -99,7 +99,7 @@ def plot_eff_fixed_eps(matched_target_particles_hist, particles_hist, eps_data, 
     fig.savefig(os.path.join(eval_config["output_dir"], filename))
 
     print(
-        "Finish plotting. Find the plot at"
+        "INFO: Finish plotting. Find the plot at"
         f' {os.path.join(eval_config["output_dir"], filename)}'
     )
 
@@ -214,7 +214,7 @@ def plot_computing_time(time_data, eval_config):
     fig.savefig(os.path.join(eval_config["output_dir"], "inference_time.png"))
 
     print(
-        "Finish plotting. Find the plot at"
+        "INFO: Finish plotting. Find the plot at"
         f' {os.path.join(eval_config["output_dir"], "inference_time.png")}'
     )
 
@@ -224,10 +224,13 @@ def plot_hit_parameter_prediction_accuracy(
     eval_config, 
     filename="hit_parameter_pred_acc.png",
     return_fig=False, # if True, return fig, ax instead of saving the figure to filename
+    heatmap:bool=False,
+    ideal_line:bool=True,
     mask=None # boolean mask to apply to the hits before plotting
     ):
     """
-    Plot the track parameter prediction accuracy 
+    Plot the track parameter prediction accuracy for each hit on a 45 degree plot. 
+    Plots predicted value on the x-axis and true value on the y-axis.
     """
     assert mask is None or mask.int().sum() > 0, "Mask must have at least one True value"
     event = data.get(0)
@@ -254,67 +257,119 @@ def plot_hit_parameter_prediction_accuracy(
         norm_constant = norm_constant.squeeze().item()
     except AttributeError:
         norm_constant = 1.0
-    if config.get("parameter_loss_confidence"):
-        c = event.hit_parameter_confidence
-        norm_c = c
-        ax.scatter(event.hit_parameters.cpu(), event.get("hit_charge_pt_ratio").cpu() * norm_constant, s=2, c = norm_c, cmap="gist_heat")
-    else:
-        ax.scatter(event.hit_parameters.cpu(), event.get("hit_charge_pt_ratio").cpu() * norm_constant, s=2, color="black")
-    ax.set_xlabel("Hit parameters", ha="right", x=0.95, fontsize=14)
-    ax.set_ylabel("Hit charge pt ratio", ha="right", y=0.95, fontsize=14)
+
+    weird = (event.get("hit_charge_pt_ratio").cpu() * norm_constant) > 0.4 # Anomolous
+
+    print(f"DEBUG: Removing {weird.int().sum().item()} hits with hit_charge_pt_ratio * norm_constant > 0.4 for better visualization.")
+    event.hit_parameters = event.hit_parameters[~weird]
+    event['hit_charge_pt_ratio'] = event['hit_charge_pt_ratio'][~weird]
+    if abs(norm_constant - 1.0) > 1e-6: # norm constant is not 1.0
+        print("DEBUG: norm_constant =", norm_constant)
+    if heatmap:
+        ax = plt.gca()
+        ax.set_facecolor('black')
+        hb = ax.hexbin(
+            event.hit_parameters.cpu(), 
+            event.get("hit_charge_pt_ratio").cpu() * norm_constant, 
+            gridsize=70, 
+            cmap="inferno", 
+            bins='log',
+            # background='black'
+        )
+        fig.colorbar(hb, ax=ax, label=r'$\log_10(N)$')
+    else: # Scatter plot
+        if config.get("parameter_loss_confidence"):
+            norm_c = event.hit_parameter_confidence
+            ax.scatter(event.hit_parameters.cpu(), event.get("hit_charge_pt_ratio").cpu() * norm_constant, s=2, c = norm_c, cmap="gist_heat")
+        else:
+            ax.scatter(event.hit_parameters.cpu(), event.get("hit_charge_pt_ratio").cpu() * norm_constant, s=2, color="black")
+    ax.set_xlabel(r"Predicted hit $q/p_T (normalized)$", ha="right", x=0.95, fontsize=10)
+    ax.set_ylabel(r"True hit $q/p_T$ ratio (normalized)", ha="right", y=0.95, fontsize=10)
     x_min, x_max = event.hit_parameters.min(), event.hit_parameters.max()
-    ax.plot(
-        [x_min, x_max],
-        list(map(lambda x: x / float(config.get("parameter_loss_scale", 1.0)), [x_min, x_max])),
-        color="red",
-        linestyle="--",
+    if ideal_line:
+        # Draw 45 degree line (theoretical optimal prediction)
+        ax.plot(
+            [x_min, x_max],
+            list(map(lambda x: x / float(config.get("parameter_loss_scale", 1.0)), [x_min, x_max])),
+        color="black",
+        linestyle="-",
         label="Ideal prediction",
     )
     
-    # Calculate and plot 95% confidence interval
-    x = event.hit_parameters.cpu().numpy()
-    y = (event.get("hit_charge_pt_ratio").cpu().numpy() * norm_constant)
-    # Fit a linear model (y = ax + b)
-    a, b = np.polyfit(x, y, 1)
-    y_pred = a * x + b
-    n = len(x)
-    residuals = y - y_pred
-    s_err = np.sqrt(np.sum(residuals**2) / (n - 2))
-    mean_x = np.mean(x)
-    t_val = 1.96  # Approximate z-value for 95% CI
-    conf = t_val * s_err * np.sqrt(1/n + (x - mean_x)**2 / np.sum((x - mean_x)**2))
-    ax.fill_between(x, y_pred - conf, y_pred + conf, color="gray", alpha=0.3, label="95% CI")
-    if config.get("parameter_loss_confidence"):
-        c_min = event.hit_parameter_confidence.min().item()
-        c_max = event.hit_parameter_confidence.max().item()
-        fig.colorbar(
-            plt.cm.ScalarMappable(cmap="gist_heat", norm = plt.Normalize(vmin=c_min, vmax=c_max)), 
-            ax=ax, boundaries=[c_min, c_max], format="%.4f")
-    ax.set_xlim([-.002, .002])
-    ax.set_ylim([-.001, .001])
-    plt.tight_layout()
-    plt.legend()
+    # # Calculate and plot 95% confidence interval
+    # x = event.hit_parameters.cpu().numpy()
+    # y = (event.get("hit_charge_pt_ratio").cpu().numpy() * norm_constant)
+    # # Fit a linear model (y = ax + b)
+    # a, b = np.polyfit(x, y, 1)
+    # y_pred = a * x + b
+    # n = len(x)
+    # residuals = y - y_pred
+    # s_err = np.sqrt(np.sum(residuals**2) / (n - 2))
+    # mean_x = np.mean(x)
+    # t_val = 1.96  # Approximate z-value for 95% CI
+    # conf = t_val * s_err * np.sqrt(1/n + (x - mean_x)**2 / np.sum((x - mean_x)**2))
+    # ax.fill_between(x, y_pred - conf, y_pred + conf, color="gray", alpha=0.3, label="95% CI")
+    #
+
+    # if config.get("parameter_loss_confidence"):
+    #     c_min = event.hit_parameter_confidence.min().item()
+    #     c_max = event.hit_parameter_confidence.max().item()
+    #     fig.colorbar(
+    #         plt.cm.ScalarMappable(cmap="gist_heat", norm = plt.Normalize(vmin=c_min, vmax=c_max)), 
+    #         ax=ax, boundaries=[c_min, c_max], format="%.4f")
     
+    # ax.set_xlim([-.002, .002])
+    # ax.set_ylim([-.001, .001])
     # Save the plot
     atlasify(
         atlas=True if eval_config.get("trackML_data") else "Internal",
-        subtext=base_subtext + "Track parameter prediction loss",
+        subtext=base_subtext + "Track parameter prediction",
+        outside=True
     )
+    plt.legend()
+    plt.tight_layout()
     if not return_fig:
         fig.savefig(os.path.join(eval_config["output_dir"], filename))
         print(
-            "Finish plotting. Find the plot at"
+            "INFO: Finish plotting. Find the plot at"
             f' {os.path.join(eval_config["output_dir"], filename)}'
         )
     else:
         return fig, ax 
+    
+def plot_hit_parameter_prediction_accuracy_heatmap(
+    data,   
+    config,
+    eval_config,
+    filename="hit_parameter_pred_acc_heatmap.png"
+):
+    """
+    Plot the track parameter prediction accuracy for each hit on a 45 degree plot as a heatmap. 
+    Plots predicted value on the x-axis and true value on the y-axis.
+    """
+    plot_hit_parameter_prediction_accuracy(
+        data,
+        config,
+        eval_config,
+        filename=filename,
+        heatmap=True,
+        ideal_line=True
+    )
 
 def plot_binned_hit_parameter_prediction_accuracy(
     data,
     config,
     eval_config,
-    num_bins=5
+    num_bins=5,
+    heatmap:bool=False
 ):
+    """
+    Make like 5 or so plots that span across various confidence ranges
+    """
+    # Test to make sure "hit_parameter_confidence" exists in data as a datakey
+    if "hit_parameter_confidence" not in data.get(0).keys():
+        print("WARNING: Data does not have 'hit_parameter_confidence' datakey.\n Cannot plot binned hit parameter prediction accuracy.")
+        return
     # Make num_bins subplots where each subplot is the hit parameter prediction accuracy for hits in that bin.
     event = data.get(0)
     bin_dir = os.path.join(eval_config["output_dir"], f"binned_hit_param_pred_acc_({num_bins})")
@@ -364,9 +419,10 @@ def plot_binned_hit_parameter_prediction_accuracy(
         )
         fig.savefig(os.path.join(eval_config["output_dir"], bin_dir, f"hit_parameter_pred_acc_bin_{i+1}.png"))
         print(
-            "Finish plotting. Find the plot at"
+            "INFO: Finish plotting. Find the plot at"
             f' {os.path.join(eval_config["output_dir"], f"hit_parameter_pred_acc_bin_{int(_bin)}.png")}'
         )
+
 def plot_binned_std_of_residuals(
     data,
     config,
@@ -376,7 +432,11 @@ def plot_binned_std_of_residuals(
     bin_datakey="hit_eta",
     x_range=None,
     plot_statistics:bool=False,
-    return_fig=False
+    return_fig=False,
+    title:str=None,
+    plot_dots=True,
+    plot_resgression:bool=False,
+    invert_x:bool=False
 ):
     """
     Plot the binned variance of residuals of track parameter prediction,
@@ -411,29 +471,42 @@ def plot_binned_std_of_residuals(
     residuals = y - x / float(config.get("parameter_loss_scale", 1.0))
 
     # Bin with respect to the specified datakey
-    bin_data = event[bin_datakey].cpu().numpy()
+    bin_data = event[bin_datakey].cpu().numpy() * ( -1.0 if invert_x else 1.0)
+    assert x_range is not None
     bin_range = (bin_data.min(), bin_data.max()) if x_range is None else x_range
+    assert bin_range == x_range
+    print(f"DEBUG: {bin_datakey} bin range: {bin_range}")
     bins = np.linspace(bin_range[0], bin_range[1], num_bins + 1)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
-    bin_indices = np.digitize(bin_data, bins) - 1
+    bin_indices = np.digitize(bin_data, bins)
 
     # Calculate variance in each bin
     binned_variance = np.array([
         np.std(residuals[bin_indices == i]) if np.any(bin_indices == i) else 0
         for i in range(num_bins)
     ])
-    if plot_statistics:
-        binned_n = np.array([
-            np.sum(bin_indices == i)
-            for i in range(num_bins)
-        ])
+    binned_n = None
+    if plot_statistics or plot_resgression:
+        valid_mask = (bin_indices >= 0) & (bin_indices < num_bins)
+        binned_n = np.bincount(bin_indices[valid_mask], minlength=num_bins)
 
-    ax.plot(bin_centers, binned_variance, marker='o', linestyle='-', color='blue')
+    marker_style = "o" if plot_dots else ""
+    ax.plot(bin_centers, binned_variance, marker=marker_style, linestyle='-', color='blue')
     ax.set_xlabel(bin_datakey, ha="right", x=0.95, fontsize=14)
     ax.set_ylabel(r"$\sigma$ of residuals", ha="right", y=0.95, fontsize=14)
+    if title:
+        ax.set_title(title)
     plt.tight_layout()
     if plot_statistics:
-        axes[1].plot(bin_centers, binned_n, marker='x', linestyle='--', color='orange', label="Normalized counts")
+        stats_marker = "x" if plot_dots else ""
+        axes[1].plot(bin_centers, binned_n, marker=stats_marker, linestyle='--', color='orange', label="Normalized counts")
+    if plot_resgression:
+        valid_bins = binned_n > 0
+        if np.count_nonzero(valid_bins) > 1:
+            fit_x = bin_centers[valid_bins]
+            fit_y = binned_variance[valid_bins]
+            slope, intercept = np.polyfit(fit_x, fit_y, 1)
+            ax.plot(bin_centers, slope * bin_centers + intercept, color="red", linestyle="--", linewidth=1)
 
     # Save the plot
     atlasify(
@@ -445,7 +518,7 @@ def plot_binned_std_of_residuals(
     if not return_fig:
         fig.savefig(os.path.join(eval_config["output_dir"], filename))
         print(
-            "Finish plotting. Find the plot at"
+            "INFO: Finish plotting. Find the plot at"
             f' {os.path.join(eval_config["output_dir"], filename)}'
         )
     else:
@@ -457,7 +530,7 @@ def plot_binned_std_of_residuals_PT(
     eval_config,
     filename="binned_std_of_residuals_PT.png",
     num_bins=50,
-    x_range=None
+    x_range=None,
 ):
     plot_binned_std_of_residuals(
         data,
@@ -466,7 +539,8 @@ def plot_binned_std_of_residuals_PT(
         filename=filename,
         num_bins=num_bins,
         bin_datakey="hit_particle_pt",
-        plot_statistics=True,
+        plot_statistics=False,
+        plot_resgression=True,
         x_range=x_range
     )
 
@@ -486,23 +560,27 @@ def plot_binned_std_of_residuals_ETA(
         plot_statistics=True,
         bin_datakey="hit_eta"
     )
+
 def plot_binned_std_of_residuals_confidence(
     data,
     config,
     eval_config,
     filename="binned_std_of_residuals_confidence.png",
-    num_bins=50
+    num_bins=50,
+    x_range=None
 ):
+    assert x_range is not None, "reeeeee"
     plot_binned_std_of_residuals(
         data,
         config,
         eval_config,
         filename=filename,
         num_bins=num_bins,
-        plot_statistics=True,
-        bin_datakey="hit_parameter_confidence"
+        x_range=x_range,
+        plot_statistics=False,
+        bin_datakey="hit_parameter_confidence",
+        invert_x=True,
+        title="Confidence vs. Binned Std of Residuals",
+        plot_resgression=True,
+        plot_dots=False,
     )
-
-
-# TODO
-        

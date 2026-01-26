@@ -8,7 +8,6 @@ from eggnet.utils.cluster import cluster_and_match
 from eggnet.utils.plotting import *
 from eggnet.utils.slurm import submit_to_slurm
 
-
 def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm):
     # plot_eff_vs_eps
     # plot_eff_fixed_eps
@@ -23,7 +22,6 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     with open(eval_config_file, "r") as f:
         eval_config = yaml.load(f, Loader=yaml.FullLoader)
     eval_config["output_dir"] = config["output_dir"]
-
     base_model = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))(config)
     # base_model.setup(stage="test", datasets=[dataset]) # BUG: Doesn't work
     base_model.datasets = dataset
@@ -125,7 +123,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                         eval_config,
                         filename=f"binned_std_of_residuals_PT.png",
                         num_bins=50,
-                        x_range=x
+                        x_range=x,
                     )
             else:
                 plot_binned_std_of_residuals_PT(
@@ -136,6 +134,14 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                     num_bins=50,
                     x_range=x_range
                 )
+        else:
+            plot_binned_std_of_residuals_PT(
+                data,
+                config,
+                eval_config,
+                filename="binned_std_of_residuals_PT.png",
+                num_bins=50,
+            )
     if eval_config.get("plot_resolution_ETA", False):
         plot_binned_std_of_residuals_ETA(
             data,
@@ -146,19 +152,54 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             
         )
     if eval_config.get("plot_resolution_confidence", False):
-        plot_binned_std_of_residuals_confidence(
-            data,
-            config,
-            eval_config,
-            filename="binned_std_of_residuals_confidence.png",
-            num_bins=50,
-        )
+        if eval_config.get("plot_resolution_confidence_x", None):
+            x_range = eval_config.get("plot_resolution_confidence_x", None)
+        else:
+            x_range = None
+        if len(x_range) == 0: 
+            x_range = None
+        if x_range:
+            if all([isinstance(x, list) for x in x_range]):
+                for x in x_range:
+                    plot_binned_std_of_residuals_confidence(
+                        data,
+                        config,
+                        eval_config,
+                        filename=f"binned_std_of_residuals_confidence.png",
+                        num_bins=70,
+                        x_range=x
+                    )
+            else:
+                print("YAY")
+                plot_binned_std_of_residuals_confidence(
+                    data,
+                    config,
+                    eval_config,
+                    filename="binned_std_of_residuals_confidence.png",
+                    num_bins=70,
+                    x_range=x_range
+                )
+        else:
+            plot_binned_std_of_residuals_confidence(
+                data,
+                config,
+                eval_config,
+                filename="binned_std_of_residuals_confidence.png",
+                num_bins=50,
+            )
     if eval_config.get("plot_binned_hit_param_pred_acc", False):
         plot_binned_hit_parameter_prediction_accuracy(
             data,
             config,
             eval_config,
             num_bins=5
+        )
+    if eval_config.get("plot_hit_param_pred_acc_heatmap", False):
+        plot_hit_parameter_prediction_accuracy_heatmap(
+            data,
+            config,
+            eval_config,
+
         )
 
 def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset):

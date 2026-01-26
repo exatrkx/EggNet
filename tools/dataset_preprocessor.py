@@ -182,7 +182,8 @@ def subroutine(file, input_dir, output_dir, config, args):
                 hit_charges_tensor = torch.Tensor(hit_charges)
                 if config.get('add_charge_data'):
                     data_object[HIT_CHARGE_DATAKEY] = hit_charges_tensor
-                hit_momentum_tensor:torch.Tensor = data_object[HIT_MOMENTUM_DATAKEY+suffix]
+                # My attempt at projecting momentum into the right coordinate
+                hit_momentum_tensor:torch.Tensor = data_object[HIT_MOMENTUM_DATAKEY] * data_object["hit_particle_v{}".format(suffix[1:])] 
                 hit_charge_pt_ratio = hit_charges_tensor / hit_momentum_tensor
                 assert hit_charge_pt_ratio.size() == data_object["hit_particle_pt"].size(), hit_charge_pt_ratio.size()
 
@@ -205,11 +206,12 @@ def subroutine(file, input_dir, output_dir, config, args):
                 assert hit_charge_pt_ratio is not None, f"Hit charge/momentum ratio not found in event-{data_object.event_id}"
                 assert hit_charge_pt_ratio.size() == data_object.hit_particle_id.size(), f"{hit_charge_pt_ratio.size()} != {data_object.hit_particle_id.size()}"
                 data_object[HIT_CHARGE_MOMENTUM_RATIO_DATAKEY+suffix] = hit_charge_pt_ratio
-    add_hit_qpt_ratio() 
-    for coord in XYZ_COORDINATES:
-        add_hit_qpt_ratio('_' + coord)
+        add_hit_qpt_ratio() 
+        if config.get('add_xyz_charge_momentum_data'):
+            for coord in XYZ_COORDINATES:
+                add_hit_qpt_ratio(suffix = '_' + coord)
     save_pyg_data(data_object, os.path.join(output_dir), data_object.event_id)
-    validate_pyg_data(output_dir, data_object.event_id)
+    validate_pyg_data(output_dir, data_object.event_id, config=config)
 
 def save_distribution_stats_figure(directory, x:torch.Tensor, label:str):
     assert os.path.isdir(directory)
@@ -218,7 +220,7 @@ def save_distribution_stats_figure(directory, x:torch.Tensor, label:str):
     print(f"{standard_deviation=} {mean=}")
     print()
     plt.figure()
-    plt.hist(x)
+    plt.hist(x, bins=100)
     plt.savefig(os.path.join(directory, label + "_histogram.png"))
             
 def save_pyg_data( graph, output_dir, event_id):
@@ -227,7 +229,7 @@ def save_pyg_data( graph, output_dir, event_id):
         print(f"INFO: Saving graph data to {save_path}")
     torch.save(graph, save_path)    
 
-def validate_pyg_data(output_dir, event_id):
+def validate_pyg_data(output_dir, event_id, config={}):
     save_path = os.path.join(output_dir, f"event{event_id}-graph.pyg")
     # if args.verbose:
     #     print(f"INFO: Validating graph data at {save_path}")
@@ -236,7 +238,11 @@ def validate_pyg_data(output_dir, event_id):
     assert TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY in data_object.keys()
     assert data_object[TRACK_CHARGE_DATAKEY].size() == data_object[TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY].size()
     assert data_object[TRACK_CHARGE_DATAKEY].size() == data_object["track_particle_pt"].size()
-    # charge.shape == charge_pt_ratio.shape == track_particle_id.shape
+    if config.get('add_xyz_charge_momentum_data'):  
+        for suffix in XYZ_COORDINATES:
+            assert TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY + '_' + suffix in data_object.keys()
+            assert data_object[TRACK_CHARGE_MOMENTUM_RATIO_DATAKEY + '_' + suffix].size() == data_object["track_particle_pt"].size()
+        # charge.shape == charge_pt_ratio.shape == track_particle_id.shape
 
 if __name__ == '__main__':
     main()
