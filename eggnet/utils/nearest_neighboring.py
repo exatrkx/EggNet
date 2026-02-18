@@ -3,6 +3,7 @@ from torch_geometric.nn import knn_graph, radius_graph
 from cuml.neighbors import NearestNeighbors
 import cupy
 import faiss
+from abc import abstractmethod, ABC
 
 from eggnet.utils.timing import time_function
 
@@ -36,13 +37,21 @@ def cu_knn_graph(x, k, loop=False, cosine=False, r=None, use_double_metric_learn
     graph = torch.stack([graph_idxs.flatten(), ind.flatten()], dim=0)
     if r:
         graph = graph[:, d.flatten() <= r]
-    if not loop:
+    if not loop: #self looping
         return graph[:, graph[0] != graph[1]]
     else:
         return graph
 
-
-class cu_knn():
+class abstract_knn(ABC):
+    @abstractmethod
+    @time_function
+    def get_graph(self, batch, 
+                  k, r=None, node_filter=False, 
+                  loop=False, use_double_metric_learning=False
+                  ) -> torch.Tensor:
+        ...
+        
+class cu_knn(abstract_knn):
     """
     cuml.knn graph
     """
@@ -55,12 +64,15 @@ class cu_knn():
         if not loop:
             k += 1
         if use_double_metric_learning:
-            with cupy.cuda.Device(batch.target_embedding.device.index): 
-                tgt_cu = cupy.from_dlpack(batch.target_embedding.detach())
-                src_cu = cupy.from_dlpack(batch.source_embedding.detach())
+            dml_device = batch.tgt_embedding.device  
+            with cupy.cuda.Device(dml_device.index): 
+                tgt_cu = cupy.from_dlpack(batch.tgt_embedding.detach())
+                src_cu = cupy.from_dlpack(batch.src_embedding.detach())
                 self.knn.fit(src_cu)
                 d, graph_idxs = self.knn.kneighbors(tgt_cu)
+                graph_idxs = torch.from_dlpack(graph_idxs)
         else:
+            assert(0), "Code not supposed to reach here"
             with cupy.cuda.Device(batch.hit_embedding.device.index):
                 x_cu = cupy.from_dlpack(batch.hit_embedding.detach())
                 self.knn.fit(x_cu)
@@ -68,21 +80,22 @@ class cu_knn():
                 graph_idxs = torch.from_dlpack(graph_idxs)
         if r:
             d = torch.from_dlpack(d)
+        device = dml_device if use_double_metric_learning else batch.hit_embedding.device
         ind = (
-            torch.arange(graph_idxs.shape[0], device=batch.hit_embedding.device)
+            torch.arange(graph_idxs.shape[0], device=device)
             .unsqueeze(1)
             .expand(graph_idxs.shape)
         )
-        graph = torch.stack([graph_idxs.flatten(), ind.flatten()], dim=0)
+        graph = torch.stack([graph_idxs.flatten(), ind.flatten()], dim=0) # TYDO: Broken -- Type error expected Tensor as element 0 in arg 0, but got ndarray
         if r:
             graph = graph[:, d.flatten() <= r]
-        if not loop:
+        if not loop: # self-loop
             return graph[:, graph[0] != graph[1]]
         else:
             return graph
 
 
-class faiss_knn:
+class faiss_knn(abstract_knn):
     """
     cuml.knn graph
     """

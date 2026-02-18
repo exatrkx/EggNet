@@ -144,27 +144,40 @@ class EggNet(nn.Module):
                 output_activation=hparams["output_activation"],
             )
 
-        self.knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
+        self.knn:nearest_neighboring.abstract_knn = getattr(
+            nearest_neighboring, hparams.get("knn_algorithm", "cu_knn")
+            )()
+        
 
     def build_edges(self, batch, x, i, time_yes=False):
         """
         Get the hit embedding with decodder and obtain KNN edges.
+        Note: arg x: 
+            if double metric learning, expects a tuple (src_embed, tgt_embed) instead of hit_embed  
         """
-        batch.hit_embedding = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
-        if self.hparams["embedding_norm"]:
-            batch.hit_embedding = F.normalize(batch.hit_embedding)
+        if self.hparams.get("double_metric_learning"):
+            batch.src_embedding = self.src_decoder(x).detach()
+            batch.tgt_embedding = self.tgt_decoder(x).detach()
+            if self.hparams["embedding_norm"]:
+                batch.src_embedding = F.normalize(batch.src_embedding) # Tydo: out of range, got 1 should be in (-1, 0)
+                batch.tgt_embedding = F.normalize(batch.tgt_embedding)
+        else:
+            batch.hit_embedding = self.node_decoders[0 if self.hparams["recurrent"] else i](x).detach()
+            if self.hparams["embedding_norm"]:
+                batch.hit_embedding = F.normalize(batch.hit_embedding)
 
         k = (
             self.hparams["knn_train"]
             if type(self.hparams["knn_train"]) is int
             else self.hparams["knn_train"][i]
         )
-
+        
         return self.knn.get_graph(
             batch,
             k=k,
             time_yes=time_yes,
             r=self.hparams.get("r_max_train"),
+            use_double_metric_learning=self.hparams.get("double_metric_learning"),
         )
 
     def forward(self, batch, time_yes=False, **kwargs):
@@ -173,7 +186,7 @@ class EggNet(nn.Module):
         ).float()
 
         assert len(x) > 0, "Input node size == 0!!"
-
+        # Encode for first KNN cycle
         if self.hparams.get("checkpoint", False):
             v = checkpoint(self.node_encoder, x, use_reentrant=False)
             x = checkpoint(self.node_network_0, v, use_reentrant=False)
@@ -219,21 +232,6 @@ class EggNet(nn.Module):
             else:
                 x = self.gat(x, start, end, i)
 
-        if self.hparams.get("checkpoint", False):
-            batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
-        else:
-            batch.hit_embedding = self.node_decoders[-1](x)
-        if self.hparams["embedding_norm"]:
-            batch.hit_embedding = F.normalize(batch.hit_embedding)
-        if self.hparams.get("output_node_score"):
-            if self.hparams.get("checkpoint", False):
-                batch.hit_score = checkpoint(
-                    self.node_filters[-1],
-                    x,
-                    use_reentrant=False,
-                )
-            else:
-                batch.hit_score = self.node_filters[-1](x)
         if self.hparams.get("double_metric_learning"):
             if self.hparams.get("checkpoint", False):
                 batch.src_embedding = checkpoint(self.src_decoder, x, use_reentrant=False)
@@ -244,9 +242,25 @@ class EggNet(nn.Module):
             if self.hparams["embedding_norm"]:
                 batch.src_embedding = F.normalize(batch.src_embedding)
                 batch.tgt_embedding = F.normalize(batch.tgt_embedding)
-        if self.hparams.get("double_metric_learning"):
+                
             return batch.src_embedding, batch.tgt_embedding
-        else:
+        
+        else: # technically not necessary, but makes code more readable and explicit. 
+            if self.hparams.get("checkpoint", False):
+                batch.hit_embedding = checkpoint(self.node_decoders[-1], x, use_reentrant=False)
+            else:
+                batch.hit_embedding = self.node_decoders[-1](x)
+            if self.hparams["embedding_norm"]:
+                batch.hit_embedding = F.normalize(batch.hit_embedding)
+            if self.hparams.get("output_node_score"):
+                if self.hparams.get("checkpoint", False):
+                    batch.hit_score = checkpoint(
+                        self.node_filters[-1],
+                        x,
+                        use_reentrant=False,
+                    )
+                else:
+                    batch.hit_score = self.node_filters[-1](x)
             return batch.hit_embedding
         # if self.hparams.get("node_filter"):
         #     return x, filter_node_list

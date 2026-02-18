@@ -2,6 +2,7 @@ import torch
 
 from eggnet.utils.mapping import get_node_target_mask, get_target, get_weight, get_number_of_true_edges
 from eggnet.utils.cluster import cluster
+import eggnet.utils.nearest_neighboring as nearest_neighboring
 
 
 def get_optimizers(parameters, hparams):
@@ -142,7 +143,52 @@ def cluster_eval(batch, hparams):
 
     return eff, signal_eff, dup, fak
 
+def get_knn_graph(
+    batch,
+    k, 
+    r, #if none, is ignored
+    algorithm:str=""
+):
+    knn:nearest_neighboring.abstract_knn = getattr(nearest_neighboring, algorithm)
+    if knn is None:
+        raise NameError()
+    edges = knn.get_graph(batch, k, r, use_double_metric_learning=True)
+    return edges
 
+    ...
+    
+def knn_eval_from_graph(graph:torch.Tensor, batch, hparams):
+    """ Same as knn_eval but can operate on an arbitrary graph """
+    edges = graph
+    y = get_target(edges, batch.hit_particle_id)
+    # w = get_weight(batch, edges, y, weighting_config=hparams.get("weighting"))
+    tp = torch.sum(y == 1)
+    # target_tp = torch.sum((y == 1) & (w > 0))
+
+    # eff = (
+    #     tp
+    #     / get_number_of_true_edges(
+    #         batch,
+    #         reduction="sum",
+    #         upper_bound=hparams["knn_val"],
+    #         weighting_config=hparams.get("weighting"),
+    #     )[1]
+    # )
+    # signal_eff = (
+    #     target_tp
+    #     / get_number_of_true_edges(
+    #         batch,
+    #         target="weight-based",
+    #         reduction="sum",
+    #         upper_bound=hparams["knn_val"],
+    #         weighting_config=hparams.get("weighting"),
+    #     )[1]
+    # )
+    pur = tp / len(y)
+    # f1 = 2 * (eff * pur) / (eff + pur)
+    
+    return pur
+    
 def knn_eval(batch, hparams):
 
     edges = get_knn_graph(

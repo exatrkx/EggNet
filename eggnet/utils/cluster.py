@@ -13,8 +13,7 @@ def cluster(event, eps, min_samples):
     Perform clustering (currently only DBSCAN is supported).
     A track label for each hit will be written to the pyg object.
     """
-    clusterer = cuml.KNeighborsClassifier(n_neighbors=1)
-    # clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
+    clusterer = cuml.cluster.DBSCAN(eps=eps, min_samples=min_samples)
     # clusterer = cuml.cluster.hdbscan.HDBSCAN(min_cluster_size=3, allow_single_cluster=True, cluster_selection_epsilon=0)
     hit_label = clusterer.fit_predict(event.hit_embedding)
     assert hit_label.shape[0] == event.hit_embedding.shape[0], f"Clustering failed: number of labels does not match number of hits. Got {hit_label.shape[0]} labels for {event.hit_embedding.shape[0]} hits."
@@ -26,14 +25,11 @@ def dbscan_cluster(event, eps, min_samples):
     assert hit_label.shape[0] == event.hit_embedding.shape[0], f"Clustering failed: number of labels does not match number of hits. Got {hit_label.shape[0]} labels for {event.hit_embedding.shape[0]} hits."
     event.hit_label = torch.as_tensor(hit_label, device=event.hit_embedding.device)
 def knn_cluster(event, k):
-    KNN_classifier = cuml.KNeighborsClassifier()
-    KNN_classifier.fit() #TODO
-    hit_label = KNN_classifier.predict(event.hit_embedding)
-    assert hit_label.shape[0] == event.hit_embedding.shape[0], f"Clustering failed: number of labels does not match number of hits. Got {hit_label.shape[0]} labels for {event.hit_embedding.shape[0]} hits."
-    event.hit_label = torch.as_tensor(hit_label, device=event.hit_embedding.device)
-    
-    
+    raise NotImplementedError()
 
+def walkthrough(event):
+    raise NotImplementedError()
+    
 def cluster_and_match(event, eps, eval_config, time_yes=False):
     """
     Perform clustering for the given event and calculate the matched tracks information.

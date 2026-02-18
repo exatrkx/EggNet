@@ -14,6 +14,7 @@ def hinge_loss(
     weighting_config=None,
     sum=False,
     node_score=False,
+    use_double_metric_learning:bool = False,
 ):
     if y is None:
         y = get_target(edges, batch.hit_particle_id)
@@ -28,10 +29,16 @@ def hinge_loss(
 
     if f is None:
         f = torch.ones(edges.shape[1], device=edges.device)
-
-    d = get_distances(
-        batch.hit_embedding, edges, batch.filter_node_list if node_filter else None
-    )
+    # TYDO: 
+    if use_double_metric_learning:
+        d = get_distances(
+            (batch.tgt_embedding, batch.src_embedding), edges, batch.filter_node_list if node_filter else None,
+            use_double_metric_learning=True
+        )
+    else:
+        d = get_distances(
+            batch.hit_embedding, edges, batch.filter_node_list if node_filter else None
+        )
 
     loss = torch.nn.functional.hinge_embedding_loss(
         d,
@@ -62,6 +69,8 @@ def get_distances(node_embedding, edges, filter_node_list=None, use_double_metri
         reference = node_embedding[0][edges[1]] # src embedding
         neighbors = node_embedding[1][edges[0]] # tgt embedding
     else:
+        if isinstance(node_embedding, tuple):
+            raise ValueError("node_embedding must be a tuple of (tgt_emb, src_emb) when use_double_metric_learning is True.")
         reference = node_embedding[edges[1]]
         neighbors = node_embedding[edges[0]]
 
