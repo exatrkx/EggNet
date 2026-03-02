@@ -95,10 +95,11 @@ def get_trainer(config, default_root_dir):
         else None
     )
 
-    if (
+    resuming_from_checkpoint = (
         isinstance(default_root_dir, str)
         and find_latest_checkpoint(default_root_dir) is not None
-    ):
+    )
+    if resuming_from_checkpoint:
         logging.info(
             f"Found checkpoint from a previous run in {default_root_dir}, resuming from"
             f" {find_latest_checkpoint(default_root_dir)}"
@@ -107,11 +108,20 @@ def get_trainer(config, default_root_dir):
     logging.info(f"Job ID: {job_id}, resume: {resume}")
 
     # handle wandb logging
+    wandb_id_path = (
+        os.path.join(default_root_dir, "wandb_run_id.txt")
+        if isinstance(default_root_dir, str)
+        else None
+    )
+    wandb_id = None
+    if resuming_from_checkpoint and wandb_id_path and os.path.exists(wandb_id_path):
+        with open(wandb_id_path, "r") as f:
+            wandb_id = f.read().strip() or None
     logger = (
         WandbLogger(
             project=config["project"],
             save_dir=config["output_dir"],
-            id=job_id,
+            id=wandb_id or job_id,
             name=job_id,
             group=config.get("group"),
             resume=resume,
@@ -119,6 +129,16 @@ def get_trainer(config, default_root_dir):
         if config.get("log_wandb", True)
         else CSVLogger(save_dir=config["output_dir"])
     )
+    if (
+        config.get("log_wandb", True)
+        and wandb_id_path
+        and hasattr(logger, "experiment")
+        and hasattr(logger.experiment, "id")
+        and logger.experiment.id is not None
+    ):
+        os.makedirs(os.path.dirname(wandb_id_path), exist_ok=True)
+        with open(wandb_id_path, "w") as f:
+            f.write(str(logger.experiment.id))
 
     filename_suffix = (
         str(logger.experiment.id)
@@ -140,6 +160,10 @@ def get_trainer(config, default_root_dir):
         mode=metric_mode,
         save_top_k=config.get("save_top_k", 1),
         save_last=True,
+        save_on_train_epoch_end=config.get("save_on_train_epoch_end", True),
+        every_n_train_steps=config.get("every_n_train_steps", None),
+        train_time_interval=config.get("train_time_interval", None),
+        every_n_epochs=config.get("every_n_epochs", 1),
     )
     checkpoint_callback.CHECKPOINT_NAME_LAST = f"last-{filename_suffix}"
 
