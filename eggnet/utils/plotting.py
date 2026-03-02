@@ -144,8 +144,10 @@ def plot_1d_histogram(
     label,
     canvas=None,
     logx=False,
+    logy=False,
     color="black",
     fmt="o",
+    tightlayout=True, # for backwards compatibility
 ):
     """Plot 1D histogram from direct output of np.histogram
 
@@ -172,8 +174,11 @@ def plot_1d_histogram(
     ax.set_ylabel(ylabel, ha="right", y=0.95, fontsize=14)
     if logx:
         ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
     ax.set_ylim(ylim)
-    plt.tight_layout()
+    if tightlayout:
+        plt.tight_layout()
 
     return fig, ax
 

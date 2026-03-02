@@ -9,6 +9,8 @@ def get_target(edges, hit_particle_id):
     Return truth labels for all edges.
     """
     y = torch.ones(edges.shape[1], device=edges.device) * (-1)
+    # TYDO Make it so that it cares about the ordering
+    # Use batch.track_edges to match instead
     y[
         (hit_particle_id[edges[0]] == hit_particle_id[edges[1]])
         & (hit_particle_id[edges[0]] != 0)

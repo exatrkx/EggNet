@@ -143,59 +143,18 @@ def cluster_eval(batch, hparams):
 
     return eff, signal_eff, dup, fak
 
-def get_knn_graph(
-    batch,
-    k, 
-    r, #if none, is ignored
-    algorithm:str=""
-):
-    knn:nearest_neighboring.abstract_knn = getattr(nearest_neighboring, algorithm)
-    if knn is None:
+
+def knn_eval(batch, hparams, k:int=None):
+    if k is None: 
+        k = hparams.get("knn_val")
+    if k is None: 
         raise NameError()
-    edges = knn.get_graph(batch, k, r, use_double_metric_learning=True)
-    return edges
-
-    ...
-    
-def knn_eval_from_graph(graph:torch.Tensor, batch, hparams):
-    """ Same as knn_eval but can operate on an arbitrary graph """
-    edges = graph
-    y = get_target(edges, batch.hit_particle_id)
-    # w = get_weight(batch, edges, y, weighting_config=hparams.get("weighting"))
-    tp = torch.sum(y == 1)
-    # target_tp = torch.sum((y == 1) & (w > 0))
-
-    # eff = (
-    #     tp
-    #     / get_number_of_true_edges(
-    #         batch,
-    #         reduction="sum",
-    #         upper_bound=hparams["knn_val"],
-    #         weighting_config=hparams.get("weighting"),
-    #     )[1]
-    # )
-    # signal_eff = (
-    #     target_tp
-    #     / get_number_of_true_edges(
-    #         batch,
-    #         target="weight-based",
-    #         reduction="sum",
-    #         upper_bound=hparams["knn_val"],
-    #         weighting_config=hparams.get("weighting"),
-    #     )[1]
-    # )
-    pur = tp / len(y)
-    # f1 = 2 * (eff * pur) / (eff + pur)
-    
-    return pur
-    
-def knn_eval(batch, hparams):
-
-    edges = get_knn_graph(
+    knn_class:nearest_neighboring.abstract_knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
+    edges = knn_class.get_graph(
         batch,
-        k=hparams["knn_val"],
+        k,
         r=hparams.get("r_max"),
-        algorithm=hparams.get("knn_algorithm", "cu_knn"),
+        use_double_metric_learning=hparams.get("double_metric_learning", False),
     )
     if hparams.get("node_filter"):
         edges = batch.filter_node_list[edges]

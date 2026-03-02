@@ -61,12 +61,13 @@ class cu_knn(abstract_knn):
 
     @time_function
     def get_graph(self, batch, k, r=None, node_filter=False, loop=False, use_double_metric_learning=False):
+        assert k is not None
         if not loop:
             k += 1
         if use_double_metric_learning:
             dml_device = batch.tgt_embedding.device  
             with cupy.cuda.Device(dml_device.index): 
-                tgt_cu = cupy.from_dlpack(batch.tgt_embedding.detach())
+                tgt_cu = cupy.from_dlpack(batch.tgt_embedding.detach()) #TYDO somehow this throws an error since tg
                 src_cu = cupy.from_dlpack(batch.src_embedding.detach())
                 self.knn.fit(src_cu)
                 d, graph_idxs = self.knn.kneighbors(tgt_cu)

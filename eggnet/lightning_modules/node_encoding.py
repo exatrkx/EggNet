@@ -1,7 +1,7 @@
 import os
 
 from .base_module import BaseModule
-from .utils.utils import cluster_eval, knn_eval, knn_eval_from_graph, get_knn_graph
+from .utils.utils import cluster_eval, knn_eval
 
 
 class NodeEncoding(BaseModule):
@@ -18,18 +18,10 @@ class NodeEncoding(BaseModule):
             batch.hit_embedding = self(batch)
         
         res = self.loss_fn(batch)
-        if self.hparams.get("double_metric_learning"):
-            # we use new prefixes that need to be logged correctly. 
-            for prefix in ["tgt", "src"]:
-                self.log_dict(
-                    {f"{prefix}_train_{metric}": res[prefix+'_'+metric] for metric in self.hparams.get("train_metric", ["loss"])},
-                    batch_size=1,
-                )
-        else:
-            self.log_dict(
-                {f"train_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
-                batch_size=1,
-            )
+        self.log_dict(
+            {f"train_{metric}": res[metric] for metric in self.hparams.get("train_metric", ["loss"])},
+            batch_size=1,
+        )
 
         return res["loss"]
 
@@ -59,10 +51,10 @@ class NodeEncoding(BaseModule):
             #     sync_dist=True,
             # )
             # We want to output the graph sparsity 
-            _, _, pur, _ = knn_eval(batch, self.hparams)
+            _, _, pur, _ = knn_eval(batch, self.hparams, 1)
             
             self.log_dict(
-                {"purity": pur,},
+                {"val_purity": pur,},
                 batch_size=1,
                 sync_dist=True,
             )
@@ -81,7 +73,6 @@ class NodeEncoding(BaseModule):
             )
         # print("validation step end", torch.cuda.max_memory_allocated(device="cuda"))
 
-        return eff
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         if len(batch) == 0:
@@ -96,9 +87,10 @@ class NodeEncoding(BaseModule):
             )
         ):
             return 0
-
         if self.hparams.get("node_filter"):
             batch.hit_embedding, batch.filter_node_list = self(batch, time_yes=True)
+        elif self.hparams.get("double_metric_learning"):
+            batch.src_embedding, batch.tgt_embedding = self(batch) # tydo: Is this necessary? The batch field seems to already be assigned to in the forward pass
         else:
             batch.hit_embedding = self(batch, time_yes=True)
 

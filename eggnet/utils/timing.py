@@ -23,8 +23,13 @@ def time_function(f):
             kwargs["time_yes"] = time_yes
         if time_yes:
             start = time.time()
-
-        res = f(*args, **kwargs)
+        try:
+            res = f(*args, **kwargs)
+        except TypeError as e:
+            print(f"{f.__code__.co_varnames=}")
+            print(f"{args=}")
+            print(f"{kwargs=}")
+            raise e
         if time_yes:
             end = time.time()
             if f.__qualname__ in batch.keys():
