@@ -72,6 +72,9 @@ def make_mlp(
 # max_distance = 0.14;
 
 def get_edge_distances(graph, edges=None):
+    """
+    if Edges=None, gets the edge distances for every true edge. Else uses the edges provided.
+    """
     if edges is None:
         edges = graph.track_edges
     if edges.numel() == 0:
@@ -79,7 +82,7 @@ def get_edge_distances(graph, edges=None):
     src = graph.src_embedding[edges[0]]
     tgt = graph.tgt_embedding[edges[1]]
     return torch.sqrt(torch.sum((src - tgt) ** 2, dim=-1))
-     
+    
 def filter_edges(graph, edge_index_key:str, critereon:Callable):
     """
     Remove edges from the graph that have a score below the given threshold
@@ -180,27 +183,11 @@ def labels_to_lists(simple_path_graph):
 
     return result
 
-import networkx as nx
 def topological_sort_graph(G):
     """
     Sort Topologcially the graph such node u appears befroe v if the connection is u->v
     This ordering is valid only if the graph has no directed cycles
     """
-    H = nx.DiGraph()
-    # Add nodes w/o any features attached
-    # maybe this is not needed given line 48?
-    H.add_nodes_from(nx.topological_sort(G))
-
-    # put it after the add nodes
-    H.add_edges_from(G.edges(data=True))
-    sorted_nodes = []
-
-    # Add corresponding nodes features
-    for i in list(nx.topological_sort(G)):
-        sorted_nodes.append((i, G.nodes[i]))
-    H.add_nodes_from(sorted_nodes)
-
-    return H
 
 
 def resolve_ambiguities(tracks, max_ambi_hits):

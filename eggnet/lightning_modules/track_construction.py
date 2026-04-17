@@ -1,14 +1,13 @@
 import numpy as np
 import torch
 from typing import Dict
-from .base_module import BaseModule
 import os, sys
 from . import utils
 import pandas as pd
 from tqdm import tqdm
 
 
-class TrackBuildingStage(BaseModule):
+class TrackBuildingStage(torch.nn.Module):
     def __init__(self, hparams, get_logger=True):
         super().__init__()
 

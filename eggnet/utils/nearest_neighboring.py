@@ -1,11 +1,80 @@
 import torch
-from torch_geometric.nn import knn_graph, radius_graph
+from torch_geometric.nn import knn_graph, radius_graph, radius
 from cuml.neighbors import NearestNeighbors
 import cupy
 import faiss
 from abc import abstractmethod, ABC
+from threading import local
 
 from eggnet.utils.timing import time_function
+
+try:
+    import frnn
+
+    FRNN_AVAILABLE = True
+except ImportError:
+    frnn = None
+    FRNN_AVAILABLE = False
+
+if not torch.cuda.is_available():
+    FRNN_AVAILABLE = False
+
+
+def build_edges(
+    query,
+    database,
+    indices=None,
+    r_max=1.0,
+    k_max=10,
+    return_indices=False,
+    backend="FRNN",
+):
+    """
+    Build bipartite edges from `query` to `database`.
+
+    The returned edge list follows the ACORN convention: row 0 indexes the
+    query points and row 1 indexes the database points.
+    """
+    use_frnn = (
+        str(backend).upper() == "FRNN"
+        and FRNN_AVAILABLE
+        and query.device.type == "cuda"
+        and database.device.type == "cuda"
+    )
+
+    if use_frnn:
+        dists, idxs, _, _ = frnn.frnn_grid_points(
+            points1=query.unsqueeze(0),
+            points2=database.unsqueeze(0),
+            lengths1=None,
+            lengths2=None,
+            K=k_max,
+            r=r_max,
+            grid=None,
+            return_nn=False,
+            return_sorted=True,
+        )
+        idxs = idxs.squeeze(0).int()
+        ind = (
+            torch.arange(idxs.shape[0], device=query.device)
+            .repeat(idxs.shape[1], 1)
+            .T.int()
+        )
+        positive_idxs = idxs >= 0
+        edge_list = torch.stack([ind[positive_idxs], idxs[positive_idxs]]).long()
+    else:
+        edge_list = radius(database, query, r=r_max, max_num_neighbors=k_max)
+
+    if indices is not None:
+        edge_list[0] = indices[edge_list[0]]
+
+    edge_list = edge_list[:, edge_list[0] != edge_list[1]]
+
+    return (
+        (edge_list, dists, idxs, ind)
+        if (return_indices and use_frnn)
+        else edge_list
+    )
 
 
 def cu_knn_graph(x, k, loop=False, cosine=False, r=None, use_double_metric_learning=False):
@@ -57,27 +126,35 @@ class cu_knn(abstract_knn):
     """
 
     def __init__(self):
-        self.knn = NearestNeighbors()
+        self._thread_local = local()
+
+    def _get_knn(self):
+        knn = getattr(self._thread_local, "knn", None)
+        if knn is None:
+            knn = NearestNeighbors()
+            self._thread_local.knn = knn
+        return knn
 
     @time_function
     def get_graph(self, batch, k, r=None, node_filter=False, loop=False, use_double_metric_learning=False):
         assert k is not None
         if not loop:
             k += 1
+        knn = self._get_knn()
         if use_double_metric_learning:
             dml_device = batch.tgt_embedding.device  
             with cupy.cuda.Device(dml_device.index): 
                 tgt_cu = cupy.from_dlpack(batch.tgt_embedding.detach()) #TYDO somehow this throws an error since tg
                 src_cu = cupy.from_dlpack(batch.src_embedding.detach())
-                self.knn.fit(src_cu)
-                d, graph_idxs = self.knn.kneighbors(tgt_cu)
+                knn.fit(src_cu)
+                d, graph_idxs = knn.kneighbors(tgt_cu)
                 graph_idxs = torch.from_dlpack(graph_idxs)
         else:
-            assert(0), "Code not supposed to reach here"
+            # assert(0), "Code not supposed to reach here"
             with cupy.cuda.Device(batch.hit_embedding.device.index):
                 x_cu = cupy.from_dlpack(batch.hit_embedding.detach())
-                self.knn.fit(x_cu)
-                d, graph_idxs = self.knn.kneighbors(x_cu)
+                knn.fit(x_cu)
+                d, graph_idxs = knn.kneighbors(x_cu)
                 graph_idxs = torch.from_dlpack(graph_idxs)
         if r:
             d = torch.from_dlpack(d)

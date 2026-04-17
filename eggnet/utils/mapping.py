@@ -4,13 +4,39 @@ import torch
 from torch_scatter import scatter
 
 
-def get_target(edges, hit_particle_id):
+def get_target_ordered(edges, track_edges):
     """
-    Return truth labels for all edges.
+    Return binary labels for edges by exact membership in truth track_edges.
     """
+    if edges.numel() == 0:
+        return torch.empty(0, dtype=torch.float32, device=edges.device)
+
+    y = torch.full((edges.shape[1],), -1.0, device=edges.device)
+    if track_edges is None:
+        raise ValueError("track_edges must be provided when ordering=True")
+    if track_edges.numel() == 0:
+        return y
+
+    max_node = torch.maximum(edges.max(), track_edges.max())
+    base = int(max_node.item()) + 1
+    edge_ids = edges[0].long() * base + edges[1].long()
+    track_ids = track_edges[0].long() * base + track_edges[1].long()
+    track_ids_sorted, _ = torch.sort(track_ids)
+    pos = torch.searchsorted(track_ids_sorted, edge_ids)
+    in_track = (pos < track_ids_sorted.numel()) & (track_ids_sorted[pos] == edge_ids)
+    y[in_track] = 1.0
+    return y
+
+
+def get_target(edges, hit_particle_id, ordering=False, track_edges=None):
+    """
+    Return truth labels for all edges. Does not care that the edge it true, only that the endpoints correspond to the same particle id. 
+    If ordering is enabled, checks if the edge itself is true. 
+    """
+    if ordering:
+        return get_target_ordered(edges, track_edges)
+
     y = torch.ones(edges.shape[1], device=edges.device) * (-1)
-    # TYDO Make it so that it cares about the ordering
-    # Use batch.track_edges to match instead
     y[
         (hit_particle_id[edges[0]] == hit_particle_id[edges[1]])
         & (hit_particle_id[edges[0]] != 0)

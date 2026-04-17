@@ -27,8 +27,12 @@ class BaseModule(LightningModule):
         return self.model(batch, time_yes=time_yes, **kwargs)
 
     def setup(self, stage="fit", datasets=None):
+        if stage == "predict" and datasets is None:
+            datasets = self.hparams.get("predict_datasets")
         if datasets is None:
             datasets = ["trainset", "valset", "testset"]
+        else:
+            datasets = list(datasets)
         if stage == "fit":
             datasets = ["trainset", "valset"]
             precision = "medium"
@@ -42,6 +46,7 @@ class BaseModule(LightningModule):
         torch.set_float32_matmul_precision(precision)
 
     def load_data(self, input_dir, stage, datasets=["trainset", "valset", "testset"]):
+        self.trainset, self.valset, self.testset = None, None, None
         for data_name, data_num in zip(
             ["trainset", "valset", "testset"], self.hparams["data_split"]
         ):
@@ -131,11 +136,16 @@ class BaseModule(LightningModule):
             pg["lr"] = max(pg["lr"], self.hparams.get("min_lr", 0))
 
     def save_graph(self, event, data_name):
+        if not hasattr(event, "config") or event.config is None:
+            event.config = []
         event.config.append(self.hparams)
-        os.makedirs(os.path.join(self.hparams["output_dir"], data_name), exist_ok=True)
-        torch.save(
-            event.cpu(),
-            os.path.join(
-                self.hparams["output_dir"], data_name, f"event{event.event_id[0]}.pyg"
-            ),
-        )
+        output_dir = os.path.join(self.hparams["output_dir"], data_name)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"event{event.event_id[0]}.pyg")
+        tmp_path = f"{output_path}.tmp.{os.getpid()}"
+        try:
+            torch.save(event.cpu(), tmp_path)
+            os.replace(tmp_path, output_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)

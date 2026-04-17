@@ -8,7 +8,13 @@ from atlasify import atlasify
 import atlasify as atl
 
 
-def plot_eff_vs_eps(eps_data, eval_config):
+def plot_eff_vs_eps(
+    eps_data,
+    eval_config,
+    xlabel=r"$\epsilon$",
+    output_filename="track_eff_dbscan_vs_eps.png",
+    selection_subtext="DBSCAN (min_samples = 3)",
+):
 
     if eval_config.get("trackML_data"):
         atl.ATLAS = "TrackML Dataset"
@@ -29,7 +35,7 @@ def plot_eff_vs_eps(eps_data, eval_config):
         eps_data.eps, eps_data.dup, color="red", marker="o", linestyle="-.", label="Duplication rate"
     )
     ax.plot(eps_data.eps, eps_data.fak, color="blue", marker="o", linestyle="--", label="Fake rate")
-    ax.set_xlabel(r"$\epsilon$", ha="right", x=0.95, fontsize=14)
+    ax.set_xlabel(xlabel, ha="right", x=0.95, fontsize=14)
     ax.set_ylabel("Efficiency (Rate)", ha="right", y=0.95, fontsize=14)
     ax.set_ylim([0, 1])
     ax.legend(loc="upper right", fontsize=14)
@@ -38,19 +44,29 @@ def plot_eff_vs_eps(eps_data, eval_config):
     # Save the plot
     atlasify(
         atlas=True if eval_config.get("trackML_data") else "Internal",
-        subtext=base_subtext + "DBSCAN (min_samples = 3)",
+        subtext=base_subtext + selection_subtext,
     )
-    fig.savefig(os.path.join(eval_config["output_dir"], "track_eff_dbscan_vs_eps.png"))
+    fig.savefig(os.path.join(eval_config["output_dir"], output_filename))
 
     print(
         "Finish plotting. Find the plot at"
-        f' {os.path.join(eval_config["output_dir"], "track_eff_dbscan_vs_eps.png")}'
+        f' {os.path.join(eval_config["output_dir"], output_filename)}'
     )
 
     plt.clf()
 
 
-def plot_eff_fixed_eps(matched_target_particles_hist, particles_hist, eps_data, eval_config, bins, xlabel, logx, filename):
+def plot_eff_fixed_eps(
+    matched_target_particles_hist,
+    particles_hist,
+    eps_data,
+    eval_config,
+    bins,
+    xlabel,
+    logx,
+    filename,
+    selection_subtext=None,
+):
 
     if eval_config.get("trackML_data"):
         atl.ATLAS = "TrackML Dataset"
@@ -85,11 +101,15 @@ def plot_eff_fixed_eps(matched_target_particles_hist, particles_hist, eps_data, 
     )
 
     # Save the plot
+    if selection_subtext is None:
+        selection_subtext = (
+            r"DBSCAN ($\epsilon$"
+            + f"={eval_config['eps']}, min_samples=3)"
+        )
     atlasify(
         atlas=True if eval_config.get("trackML_data") else "Internal",
         subtext=base_subtext
-        + r"DBSCAN ($\epsilon$"
-        + f"={eval_config['eps']}, min_samples=3)"
+        + selection_subtext
         + "\n"
         f"Efficiency: {eff :.4f}" + "\n"
         f"Duplication rate: {dup :.4f}" + "\n"

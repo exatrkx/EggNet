@@ -29,7 +29,6 @@ def hinge_loss(
 
     if f is None:
         f = torch.ones(edges.shape[1], device=edges.device)
-    # TYDO: 
     if use_double_metric_learning:
         d = get_distances(
             (batch.tgt_embedding, batch.src_embedding), edges, batch.filter_node_list if node_filter else None,

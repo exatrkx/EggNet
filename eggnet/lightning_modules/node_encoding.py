@@ -1,12 +1,16 @@
 import os
+import torch
 
 from .base_module import BaseModule
 from .utils.utils import cluster_eval, knn_eval
+from eggnet.utils.timing import add_profile_time, profile_section
+from time import perf_counter
 
 
 class NodeEncoding(BaseModule):
     def __init__(self, hparams):
         super().__init__(hparams)
+        self.enable_profiling = self.hparams.get("enable_profiling", True)
 
     def training_step(self, batch, batch_idx):
         
@@ -51,7 +55,8 @@ class NodeEncoding(BaseModule):
             #     sync_dist=True,
             # )
             # We want to output the graph sparsity 
-            _, _, pur, _ = knn_eval(batch, self.hparams, 1)
+            _, _, pur, _ = knn_eval(batch, self.hparams, k=1, ordering=False)
+            
             
             self.log_dict(
                 {"val_purity": pur,},
@@ -78,24 +83,87 @@ class NodeEncoding(BaseModule):
         if len(batch) == 0:
             return
 
+        step_start = perf_counter()
         dataset = self.predict_dataloader()[dataloader_idx].dataset
-        if os.path.isfile(
-            os.path.join(
-                self.hparams["output_dir"],
-                dataset.data_name,
-                f"event{batch.event_id[0]}.pyg",
-            )
-        ):
-            return 0
+        reuse_inference_output = bool(
+            self.hparams.get("reuse_inference_output", False)
+        )
+        output_path = os.path.join(
+            self.hparams["output_dir"],
+            dataset.data_name,
+            f"event{batch.event_id[0]}.pyg",
+        )
+        if os.path.isfile(output_path):
+            if self.hparams.get("double_metric_learning"):
+                if reuse_inference_output:
+                    try:
+                        existing_graph = torch.load(output_path, map_location="cpu")
+                    except Exception:
+                        print(
+                            f"Unreadable output graph at {output_path}; "
+                            "recomputing and overwriting it.",
+                            flush=True,
+                        )
+                        try:
+                            os.remove(output_path)
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        if hasattr(existing_graph, "src_embedding") and hasattr(
+                            existing_graph, "tgt_embedding"
+                        ):
+                            return 0
+                        print(
+                            f"Output graph at {output_path} is missing embeddings; "
+                            "recomputing and overwriting it.",
+                            flush=True,
+                        )
+            elif reuse_inference_output:
+                return 0
         if self.hparams.get("node_filter"):
-            batch.hit_embedding, batch.filter_node_list = self(batch, time_yes=True)
+            with profile_section(
+                batch,
+                "predict_step.embed",
+                enabled=self.enable_profiling,
+            ):
+                batch.hit_embedding, batch.filter_node_list = self(
+                    batch, time_yes=self.enable_profiling
+                )
         elif self.hparams.get("double_metric_learning"):
-            batch.src_embedding, batch.tgt_embedding = self(batch) # tydo: Is this necessary? The batch field seems to already be assigned to in the forward pass
+            with profile_section(
+                batch,
+                "predict_step.embed",
+                enabled=self.enable_profiling,
+            ):
+                batch.src_embedding, batch.tgt_embedding = self(
+                    batch, time_yes=self.enable_profiling
+                ) # tydo: Is this necessary? The batch field seems to already be assigned to in the forward pass
         else:
-            batch.hit_embedding = self(batch, time_yes=True)
+            with profile_section(
+                batch,
+                "predict_step.embed",
+                enabled=self.enable_profiling,
+            ):
+                batch.hit_embedding = self(batch, time_yes=self.enable_profiling)
 
-        dataset.unscale_features(batch)
+        with profile_section(
+            batch,
+            "predict_step.unscale_features",
+            enabled=self.enable_profiling,
+        ):
+            dataset.unscale_features(batch)
+        if self.enable_profiling:
+            add_profile_time(
+                batch,
+                "predict_step.total",
+                perf_counter() - step_start,
+            )
 
-        self.save_graph(batch, dataset.data_name)
+        with profile_section(
+            batch,
+            "predict_step.save_graph",
+            enabled=self.enable_profiling,
+        ):
+            self.save_graph(batch, dataset.data_name)
 
         return 0

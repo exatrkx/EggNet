@@ -1,3 +1,5 @@
+import os
+
 import yaml
 from tqdm import tqdm
 import numpy as np
@@ -7,7 +9,76 @@ from eggnet import lightning_modules
 from eggnet.utils.cluster import cluster_and_match
 from eggnet.utils.plotting import plot_eff_vs_eps, plot_eff_fixed_eps, plot_computing_time
 from eggnet.utils.slurm import submit_to_slurm
-from eggnet.models.utils.plotting import plot_distance_histogram, plot_cc
+from eggnet.models.utils.plotting import (
+    aggregate_dml_event_data,
+    get_dml_eval_scan_data,
+    plot_branching_diagnostics,
+    plot_distance_histogram,
+    plot_cc,
+    plot_edge_score_diagnostics,
+    plot_efficiency_vs_occupancy,
+    plot_graph_reduction_waterfall,
+    plot_hit_assignment_fraction,
+    plot_reco_method_breakdown,
+    plot_stage_timing_breakdown,
+    plot_simple_graphs,
+    plot_cutoff_efficiency,
+    plot_split_merge_summary,
+    plot_time_vs_occupancy,
+    plot_track_completeness_distribution,
+    plot_track_length_distribution,
+    plot_track_purity_distribution,
+    plot_tracks_per_event,
+    plot_purity_vs_length,
+)
+
+
+UNSUPPORTED_DML_PLOT_FLAGS = (
+    "plot_computing_time",
+    "plot_parameter_predict",
+    "plot_resolution_PT",
+    "plot_resolution_ETA",
+)
+
+DML_AGGREGATE_PLOT_HANDLERS = (
+    ("plot_track_length_distribution", plot_track_length_distribution),
+    ("plot_hit_assignment_fraction", plot_hit_assignment_fraction),
+    ("plot_reco_method_breakdown", plot_reco_method_breakdown),
+    ("plot_tracks_per_event", plot_tracks_per_event),
+    ("plot_time_vs_occupancy", plot_time_vs_occupancy),
+    ("plot_stage_timing_breakdown", plot_stage_timing_breakdown),
+    ("plot_graph_reduction_waterfall", plot_graph_reduction_waterfall),
+    ("plot_efficiency_vs_occupancy", plot_efficiency_vs_occupancy),
+    ("plot_track_purity_distribution", plot_track_purity_distribution),
+    ("plot_track_completeness_distribution", plot_track_completeness_distribution),
+    ("plot_split_merge_summary", plot_split_merge_summary),
+    ("plot_purity_vs_length", plot_purity_vs_length),
+    ("plot_edge_score_diagnostics", plot_edge_score_diagnostics),
+    ("plot_branching_diagnostics", plot_branching_diagnostics),
+)
+
+
+def _resolve_walkthrough_output_dir(config, base_output_dir):
+    explicit_output_dir = config.get("walkthrough_output_dir")
+    if explicit_output_dir:
+        return explicit_output_dir
+    walkthrough_subdir = config.get("walkthrough_subdir", "walkthrough")
+    return os.path.join(base_output_dir, walkthrough_subdir)
+
+
+def _enabled_eval_flags(eval_config, flag_names):
+    return [flag for flag in flag_names if bool(eval_config.get(flag, False))]
+
+
+def _validate_dml_eval_config(eval_config):
+    enabled_legacy_flags = _enabled_eval_flags(eval_config, UNSUPPORTED_DML_PLOT_FLAGS)
+    if enabled_legacy_flags:
+        flags = ", ".join(enabled_legacy_flags)
+        raise ValueError(
+            "double_metric_learning eval does not support these plot flags: "
+            f"{flags}. Disable them in the eval config or run a "
+            "non-DML eval."
+        )
 
 
 def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm):
@@ -20,20 +91,112 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         config = yaml.load(f, Loader=yaml.FullLoader)
     if output_dir is not None:
         config["output_dir"] = output_dir
+        if "walkthrough_output_dir" not in config:
+            config["walkthrough_output_dir"] = _resolve_walkthrough_output_dir(
+                config,
+                output_dir,
+            )
     with open(eval_config_file, "r") as f:
         eval_config = yaml.load(f, Loader=yaml.FullLoader)
-    eval_config["output_dir"] = config["output_dir"]
+    plot_output_dir = config["output_dir"]
+    eval_config["output_dir"] = plot_output_dir
 
-    base_model = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))(config)
+    data_config = dict(config)
+    if config.get("double_metric_learning", False):
+        _validate_dml_eval_config(eval_config)
+        data_config["output_dir"] = _resolve_walkthrough_output_dir(
+            config,
+            plot_output_dir,
+        )
+        if not os.path.isdir(data_config["output_dir"]):
+            raise FileNotFoundError(
+                "Double-metric-learning eval expects walkthrough outputs in "
+                f"{data_config['output_dir']}. Run infer first to regenerate them."
+            )
+
+    base_model = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))(data_config)
     base_model.setup(stage="test", datasets=[dataset])
     data = getattr(base_model, dataset)
 
     if config.get("double_metric_learning", False):
+        dml_graph = data.get(0)
         if (eval_config.get("plot_distance_histogram")):
-            plot_distance_histogram(data.get(0), eval_config["output_dir"], plot_suffix=dataset)
+            plot_distance_histogram(
+                dml_graph,
+                eval_config["output_dir"], 
+                plot_false_edges=True,
+                seperate_plots=False,
+                plot_suffix=dataset)
         if (eval_config.get("plot_cc")):
-            plot_cc(data.get(0), eval_config["output_dir"], hparams=config, output_suffix=dataset)
+            plot_cc(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+        if (eval_config.get("plot_simple_path_purity")):
+            plot_simple_graphs(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+        if (eval_config.get("plot_cutoff_efficiency")):
+            plot_cutoff_efficiency(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+
+        dml_plot_eta_enabled = bool(eval_config.get("plot_eta", False))
+        dml_plot_eff_vs_eps_enabled = bool(eval_config.get("plot_eff_vs_eps", False))
+        dml_plot_eff_fixed_eps_enabled = bool(eval_config.get("plot_eff_fixed_eps", False))
+        if dml_plot_eta_enabled or dml_plot_eff_vs_eps_enabled or dml_plot_eff_fixed_eps_enabled:
+            (
+                dml_eps_data,
+                dml_particles_pt_hist,
+                dml_matched_target_particles_pt_hist,
+                dml_particles_eta_hist,
+                dml_matched_target_particles_eta_hist,
+                dml_pt_bins,
+                dml_eta_bins,
+            ) = get_dml_eval_scan_data(dml_graph, eval_config, config)
+
+            if dml_plot_eff_vs_eps_enabled:
+                plot_eff_vs_eps(
+                    dml_eps_data,
+                    eval_config,
+                    xlabel="Distance cutoff",
+                    selection_subtext="Walkthrough distance cutoff",
+                )
+            if dml_plot_eff_fixed_eps_enabled:
+                selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
+                plot_eff_fixed_eps(
+                    dml_matched_target_particles_pt_hist,
+                    dml_particles_pt_hist,
+                    dml_eps_data,
+                    eval_config,
+                    dml_pt_bins,
+                    f"$p_T$ [{eval_config.get('pT_unit', 'MeV')}]",
+                    logx=True,
+                    filename="track_efficiency_pt.png",
+                    selection_subtext=selection_subtext,
+                )
+            if dml_plot_eta_enabled and dml_eta_bins is not None:
+                selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
+                plot_eff_fixed_eps(
+                    dml_matched_target_particles_eta_hist,
+                    dml_particles_eta_hist,
+                    dml_eps_data,
+                    eval_config,
+                    dml_eta_bins,
+                    r"$\eta$",
+                    logx=False,
+                    filename="track_efficiency_eta.png",
+                    selection_subtext=selection_subtext,
+                )
+
+        enabled_aggregate_handlers = [
+            (flag_name, handler)
+            for flag_name, handler in DML_AGGREGATE_PLOT_HANDLERS
+            if bool(eval_config.get(flag_name, False))
+        ]
+        if enabled_aggregate_handlers:
+            aggregate_data = aggregate_dml_event_data(data, eval_config)
+            for _, handler in enabled_aggregate_handlers:
+                handler(aggregate_data, eval_config["output_dir"], dataset)
     else:
+        plot_eta = bool(eval_config.get("plot_eta", True))
+        plot_eff_vs_eps_enabled = bool(eval_config.get("plot_eff_vs_eps", True))
+        plot_eff_fixed_eps_enabled = bool(eval_config.get("plot_eff_fixed_eps", True))
+        plot_computing_time_enabled = bool(eval_config.get("plot_computing_time", True))
+
         eps_data = pd.DataFrame({
             "eps": np.arange(0.05, 0.51, 0.05),
             "n_particles": 0,
@@ -44,12 +207,13 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             "n_tracks": 0,
         })
 
-        time_data = pd.DataFrame({
-            "num_nodes": [],
-            "eggnet": [],
-            "knn": [],
-            "dbscan": [],
-        })
+        if plot_computing_time_enabled:
+            time_data = pd.DataFrame({
+                "num_nodes": [],
+                "eggnet": [],
+                "knn": [],
+                "dbscan": [],
+            })
 
         if eval_config.get("pT_unit", "MeV") == "MeV":
             pt_min, pt_max = 1000, 50000
@@ -59,7 +223,7 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
 
         particles_pt_hist = np.histogram([], bins=pt_bins)[0]
         matched_target_particles_pt_hist = np.histogram([], bins=pt_bins)[0]
-        if eval_config.get("plot_eta", True):
+        if plot_eta:
             eta_bins = np.linspace(-4, 4)
             particles_eta_hist = np.histogram([], bins=eta_bins)[0]
             matched_target_particles_eta_hist = np.histogram([], bins=eta_bins)[0]
@@ -68,23 +232,29 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             event = event.to(accelerator)
 
             for eps_i in eps_data.eps:
-                eps_data_i, particles_pt_hist_i, matched_target_particles_pt_hist_i, particles_eta_hist_i, matched_target_particles_eta_hist_i = cluster_and_match(event, eps_i, eval_config, time_yes=True if eps_i == eval_config["eps"] else False)
+                eps_data_i, particles_pt_hist_i, matched_target_particles_pt_hist_i, particles_eta_hist_i, matched_target_particles_eta_hist_i = cluster_and_match(
+                    event,
+                    eps_i,
+                    eval_config,
+                    time_yes=plot_computing_time_enabled and eps_i == eval_config["eps"],
+                )
 
                 eps_data[eps_data.eps == eps_i] = eps_data[eps_data.eps == eps_i].to_numpy() + eps_data_i.to_numpy()
 
                 if eps_i == eval_config["eps"]:
                     particles_pt_hist += particles_pt_hist_i
                     matched_target_particles_pt_hist += matched_target_particles_pt_hist_i
-                    if eval_config.get("plot_eta", True):
+                    if plot_eta:
                         particles_eta_hist += particles_eta_hist_i
                         matched_target_particles_eta_hist += matched_target_particles_eta_hist_i
 
-            time_data = pd.concat([time_data, pd.DataFrame({
-                "num_nodes": [event["num_nodes"].cpu()],
-                "eggnet": [event["BaseModule.forward"]],
-                "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
-                "dbscan": [event["cluster"]],
-            })])
+            if plot_computing_time_enabled:
+                time_data = pd.concat([time_data, pd.DataFrame({
+                    "num_nodes": [event["num_nodes"].cpu()],
+                    "eggnet": [event["BaseModule.forward"]],
+                    "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
+                    "dbscan": [event["cluster"]],
+                })])
 
         # check metric!!
         eps_data["eff"] = eps_data.n_matched_target_particles / eps_data.n_particles
@@ -93,14 +263,18 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         ) / eps_data.n_matched_target_particles
         eps_data["fak"] = (eps_data.n_tracks - eps_data.n_matched_tracks) / eps_data.n_matched_particles
 
-        time_data["gnn"] = time_data["eggnet"] - time_data["knn"]
-        time_data["total"] = time_data["eggnet"] + time_data["dbscan"]
+        if plot_computing_time_enabled:
+            time_data["gnn"] = time_data["eggnet"] - time_data["knn"]
+            time_data["total"] = time_data["eggnet"] + time_data["dbscan"]
 
-        plot_eff_vs_eps(eps_data, eval_config)
-        plot_eff_fixed_eps(matched_target_particles_pt_hist, particles_pt_hist, eps_data, eval_config, pt_bins, f"$p_T$ [{eval_config.get('pT_unit', 'MeV')}]", logx=True, filename="track_efficiency_pt.png")
-        if eval_config.get("plot_eta", True):
+        if plot_eff_vs_eps_enabled:
+            plot_eff_vs_eps(eps_data, eval_config)
+        if plot_eff_fixed_eps_enabled:
+            plot_eff_fixed_eps(matched_target_particles_pt_hist, particles_pt_hist, eps_data, eval_config, pt_bins, f"$p_T$ [{eval_config.get('pT_unit', 'MeV')}]", logx=True, filename="track_efficiency_pt.png")
+        if plot_eff_fixed_eps_enabled and plot_eta:
             plot_eff_fixed_eps(matched_target_particles_eta_hist, particles_eta_hist, eps_data, eval_config, eta_bins, r"$\eta$", logx=False, filename="track_efficiency_eta.png")
-        plot_computing_time(time_data, eval_config)
+        if plot_computing_time_enabled:
+            plot_computing_time(time_data, eval_config)
 
 
 def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset):

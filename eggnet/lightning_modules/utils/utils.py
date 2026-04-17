@@ -144,7 +144,7 @@ def cluster_eval(batch, hparams):
     return eff, signal_eff, dup, fak
 
 
-def knn_eval(batch, hparams, k:int=None):
+def knn_eval(batch, hparams, k:int=None, ordering:bool = False):
     if k is None: 
         k = hparams.get("knn_val")
     if k is None: 
@@ -159,7 +159,12 @@ def knn_eval(batch, hparams, k:int=None):
     if hparams.get("node_filter"):
         edges = batch.filter_node_list[edges]
 
-    y = get_target(edges, batch.hit_particle_id)
+    y = get_target(
+        edges,
+        batch.hit_particle_id,
+        ordering=ordering,
+        track_edges=batch.track_edges if ordering else None,
+    )
     w = get_weight(batch, edges, y, weighting_config=hparams.get("weighting"))
     tp = torch.sum(y == 1)
     target_tp = torch.sum((y == 1) & (w > 0))

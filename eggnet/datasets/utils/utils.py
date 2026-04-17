@@ -59,6 +59,8 @@ def handle_hard_node_cuts(
     node_like_feature = [
         event[feature] for feature in event.keys() if get_variable_type(feature) == VariableType.NODE_LIKE
     ][0]
+    for n in node_like_feature:
+        assert (isinstance(n, torch.Tensor)), f"{n} \n is not a torch.Tensor, instead got {type(n)}"
     node_mask = torch.ones_like(node_like_feature, dtype=torch.bool)
 
     # TODO: Refactor this to simply trim the true tracks and check which nodes are in the true tracks

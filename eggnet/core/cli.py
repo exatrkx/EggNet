@@ -39,6 +39,11 @@ def train(**kwargs):
 @click.option("--accelerator", "-a", default=None, type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default will be what is specified in the training config.")
 @click.option("--devices", "-dv", default=None, type=int, help="Number of devices. Default will be what is specified in the training config.")
 @click.option("--num_nodes", "-n", default=None, type=int, help="Number of nodes. Default will be what is specified in the training config.")
+@click.option(
+    "--reuse_inference_output/--no-reuse_inference_output",
+    default=False,
+    help="Reuse existing output_dir .pyg files from a previous run instead of rerunning embedding inference.",
+)
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def infer(**kwargs):
     from . import infer_stage
@@ -55,6 +60,38 @@ def infer(**kwargs):
 def eval(**kwargs):
     from . import eval_stage
     return eval_stage.eval(**kwargs)
+
+
+@cli.command()
+@click.argument("input_path", type=click.Path(exists=True))
+@click.option(
+    "--event-id",
+    default=None,
+    help="Show one event from a directory by event id instead of the aggregate summary.",
+)
+@click.option(
+    "--prefix",
+    default=None,
+    help="Only include profiling stages that start with this prefix.",
+)
+@click.option(
+    "--top",
+    default=15,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Maximum number of rows to print.",
+)
+@click.option(
+    "--slowest-events",
+    default=3,
+    show_default=True,
+    type=click.IntRange(min=0),
+    help="Number of slowest event ids to print for each aggregate stage row.",
+)
+def profile(**kwargs):
+    from eggnet.tools.profile_viewer import run_profile_viewer
+
+    return run_profile_viewer(**kwargs)
 
 
 if __name__ == "__main__":

@@ -39,7 +39,10 @@ class GraphDataset(Dataset):
 
     def get(self, idx):
         event_path = self.input_paths[idx]
-        event = torch.load(event_path, map_location=torch.device("cpu"))
+        try:
+            event = torch.load(event_path, map_location=torch.device("cpu"))
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load graph file: {event_path}") from exc
         self.preprocess_event(event)
 
         return event
