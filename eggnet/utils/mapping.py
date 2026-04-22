@@ -23,7 +23,10 @@ def get_target_ordered(edges, track_edges):
     track_ids = track_edges[0].long() * base + track_edges[1].long()
     track_ids_sorted, _ = torch.sort(track_ids)
     pos = torch.searchsorted(track_ids_sorted, edge_ids)
-    in_track = (pos < track_ids_sorted.numel()) & (track_ids_sorted[pos] == edge_ids)
+    in_track = torch.zeros_like(pos, dtype=torch.bool)
+    valid_pos = pos < track_ids_sorted.numel()
+    if valid_pos.any():
+        in_track[valid_pos] = track_ids_sorted[pos[valid_pos]] == edge_ids[valid_pos]
     y[in_track] = 1.0
     return y
 

@@ -272,9 +272,12 @@ def build_edge_diagnostics_summary(
         walk_pruned_ids = walk_pruned_edges[0].long() * max_node + walk_pruned_edges[1].long()
         walk_pruned_ids_sorted, _ = torch.sort(walk_pruned_ids)
         pos = torch.searchsorted(walk_pruned_ids_sorted, walk_input_ids)
-        walk_keep_mask = (pos < walk_pruned_ids_sorted.numel()) & (
-            walk_pruned_ids_sorted[pos] == walk_input_ids
-        )
+        walk_keep_mask = torch.zeros_like(pos, dtype=torch.bool)
+        valid_pos = pos < walk_pruned_ids_sorted.numel()
+        if valid_pos.any():
+            walk_keep_mask[valid_pos] = (
+                walk_pruned_ids_sorted[pos[valid_pos]] == walk_input_ids[valid_pos]
+            )
 
     summary["walk"] = _compute_edge_class_stats(walk_scores, walk_truth_mask, walk_keep_mask, bins)
     return summary

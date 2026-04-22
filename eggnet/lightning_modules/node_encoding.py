@@ -40,7 +40,7 @@ class NodeEncoding(BaseModule):
         else:
             batch.hit_embedding = self(batch)
         current_lr = self.optimizers().param_groups[0]["lr"]
-        if self.hparams.get("no_cluster_eval") or self.hparams.get("double metric learning"): #TODO Fix
+        if self.hparams.get("no_cluster_eval") or self.hparams.get("double_metric_learning"): #TODO Fix
             # TYDO: Figure out what eff is and log and stuff with knn=1
             # eff, signal_eff, dup, fak = 0, 0, 0, 0 #bandaid
             # self.log_dict(

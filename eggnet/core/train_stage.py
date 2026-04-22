@@ -1,4 +1,5 @@
 import os
+import torch
 import yaml
 
 from eggnet import lightning_modules
@@ -6,11 +7,27 @@ from eggnet.utils.loading import get_stage_module, get_trainer
 from eggnet.utils.slurm import submit_to_slurm
 
 
+def _validate_cuda_training_config(config, config_file, slurm):
+    accelerator = config.get("accelerator")
+    if accelerator != "cuda":
+        raise ValueError(
+            f"eggnet train requires CUDA. Set `accelerator: cuda` in "
+            f"{config_file}. Got {accelerator!r}."
+        )
+    if not slurm and not torch.cuda.is_available():
+        raise RuntimeError(
+            "eggnet train requires a visible CUDA device for local runs. "
+            "Launch from a GPU node or submit with `--slurm`."
+        )
+
+
 def train(
     config_file, checkpoint, checkpoint_resume_dir, load_only_model_parameters, slurm
 ):
     with open(config_file, "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
+
+    _validate_cuda_training_config(config, config_file, slurm)
 
     if slurm:
         train_slurm(config, config_file, checkpoint, checkpoint_resume_dir, load_only_model_parameters)

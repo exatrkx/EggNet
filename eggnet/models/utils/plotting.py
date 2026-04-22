@@ -242,8 +242,8 @@ def get_dml_eval_scan_data(graph: Data, eval_config: dict, hparams: dict):
 
     eps_data = pd.DataFrame(rows)
     n_particles = eps_data["n_particles"].to_numpy(dtype=np.float64)
-    n_matched_particles = eps_data["n_matched_particles"].to_numpy(dtype=np.float64)
     n_matched_target_particles = eps_data["n_matched_target_particles"].to_numpy(dtype=np.float64)
+    n_tracks = eps_data["n_tracks"].to_numpy(dtype=np.float64)
     eps_data["eff"] = np.divide(
         n_matched_target_particles,
         n_particles,
@@ -257,10 +257,10 @@ def get_dml_eval_scan_data(graph: Data, eval_config: dict, hparams: dict):
         where=n_matched_target_particles > 0.0,
     )
     eps_data["fak"] = np.divide(
-        eps_data["n_tracks"].to_numpy(dtype=np.float64) - eps_data["n_matched_tracks"].to_numpy(dtype=np.float64),
-        n_matched_particles,
-        out=np.zeros_like(n_matched_particles),
-        where=n_matched_particles > 0.0,
+        n_tracks - eps_data["n_matched_tracks"].to_numpy(dtype=np.float64),
+        n_tracks,
+        out=np.zeros_like(n_tracks),
+        where=n_tracks > 0.0,
     )
 
     return (
@@ -439,6 +439,12 @@ def aggregate_dml_event_data(dataset, eval_config):
         num_nodes = _graph_scalar_to_int(graph.num_nodes)
         reco_tracks = list(getattr(graph, "reco_tracks", []))
         n_tracks = len(reco_tracks)
+        graph_edge_index = getattr(graph, "edge_index", None)
+        default_input_edges = (
+            int(graph_edge_index.shape[1])
+            if graph_edge_index is not None and hasattr(graph_edge_index, "shape")
+            else 0
+        )
         track_lengths.extend(len(track) for track in reco_tracks)
 
         hit_track_labels = getattr(graph, "hit_track_labels", None)
@@ -489,11 +495,7 @@ def aggregate_dml_event_data(dataset, eval_config):
             if n_matched_target_particles > 0
             else 0.0
         )
-        event_fak = (
-            (n_tracks - n_matched_tracks) / n_matched_particles
-            if n_matched_particles > 0
-            else 0.0
-        )
+        event_fak = (n_tracks - n_matched_tracks) / n_tracks if n_tracks > 0 else 0.0
 
         profile_metadata = getattr(graph, "profile_metadata", {})
         profiling = getattr(graph, "profiling", {})
@@ -598,7 +600,7 @@ def aggregate_dml_event_data(dataset, eval_config):
                 "walk_hit_count": method_hit_counts["walk"],
                 "unassigned_hit_count": method_hit_counts["unassigned"],
                 "input_nodes": int(_get_profile_metric(profile_metadata, "fast_walkthrough.input.num_nodes", num_nodes)),
-                "input_edges": int(_get_profile_metric(profile_metadata, "fast_walkthrough.input.num_edges", getattr(graph, "edge_index", torch.empty((2, 0), dtype=torch.long)).shape[1] if hasattr(graph, "edge_index") else 0)),
+                "input_edges": int(_get_profile_metric(profile_metadata, "fast_walkthrough.input.num_edges", default_input_edges)),
                 "initial_edges": int(_get_profile_metric(profile_metadata, "fast_walkthrough.initial_edge_index.num_edges", 0)),
                 "filtered_nodes": int(_get_profile_metric(profile_metadata, "fast_walkthrough.filtered.num_nodes", num_nodes)),
                 "filtered_edges": int(_get_profile_metric(profile_metadata, "fast_walkthrough.filtered.num_edges", 0)),
@@ -750,7 +752,45 @@ def plot_time_vs_occupancy(aggregate_data, output_dir, output_suffix):
     if not events.empty:
         num_nodes = events["num_nodes"].to_numpy(dtype=np.float64)
         time_taken = events["time_taken"].to_numpy(dtype=np.float64)
-        ax.scatter(num_nodes, time_taken, s=12, alpha=0.35, color="tab:blue")
+
+        # Keep the main panel readable by clipping only the visual range.
+        # Outliers are still indicated explicitly at the cap line.
+        if len(time_taken) >= 20:
+            q1, q3 = np.percentile(time_taken, [25, 75])
+            iqr = q3 - q1
+            whisker_cap = q3 + 3.0 * iqr
+            percentile_cap = np.percentile(time_taken, 99)
+            display_cap = min(max(whisker_cap, percentile_cap), time_taken.max())
+        else:
+            display_cap = time_taken.max()
+        outlier_mask = time_taken > display_cap
+        displayed_times = np.minimum(time_taken, display_cap)
+
+        ax.scatter(num_nodes, displayed_times, s=12, alpha=0.35, color="tab:blue")
+        if np.any(outlier_mask):
+            ax.scatter(
+                num_nodes[outlier_mask],
+                np.full(np.sum(outlier_mask), display_cap),
+                s=28,
+                marker="^",
+                color="tab:red",
+                alpha=0.85,
+                label="Capped outlier",
+            )
+            ax.axhline(display_cap, color="tab:red", linestyle=":", linewidth=1.0)
+            ax.text(
+                0.98,
+                0.98,
+                (
+                    f"{int(np.sum(outlier_mask))} outlier events above {display_cap:.2f} s\n"
+                    f"max = {time_taken.max():.2f} s"
+                ),
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=10,
+                bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+            )
         if len(events) >= 4:
             bins = np.linspace(num_nodes.min(), num_nodes.max(), min(16, len(events)) + 1)
             digitized = np.digitize(num_nodes, bins[1:-1], right=False)
@@ -763,7 +803,11 @@ def plot_time_vs_occupancy(aggregate_data, output_dir, output_suffix):
                 bin_centers.append(0.5 * (bins[bin_index] + bins[bin_index + 1]))
                 median_times.append(np.median(time_taken[mask]))
             if bin_centers:
-                ax.plot(bin_centers, median_times, color="black", linewidth=2)
+                ax.plot(bin_centers, np.minimum(median_times, display_cap), color="black", linewidth=2, label="Median")
+        if np.any(outlier_mask):
+            ax.set_ylim(top=display_cap * 1.05)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(loc="upper left")
     ax.set_xlabel("Event occupancy [hits]")
     ax.set_ylabel("Walkthrough time [s]")
     ax.set_title("Walkthrough time vs occupancy")
@@ -832,7 +876,6 @@ def plot_efficiency_vs_occupancy(aggregate_data, output_dir, output_suffix):
                 continue
             subset = events.loc[mask]
             n_particles = subset["n_particles"].sum()
-            n_matched_particles = subset["n_matched_particles"].sum()
             n_matched_target_particles = subset["n_matched_target_particles"].sum()
             n_matched_target_tracks = subset["n_matched_target_tracks"].sum()
             n_tracks = subset["n_tracks"].sum()
@@ -846,8 +889,8 @@ def plot_efficiency_vs_occupancy(aggregate_data, output_dir, output_suffix):
                 else 0.0
             )
             fak_values.append(
-                (n_tracks - subset["n_matched_tracks"].sum()) / n_matched_particles
-                if n_matched_particles > 0
+                (n_tracks - subset["n_matched_tracks"].sum()) / n_tracks
+                if n_tracks > 0
                 else 0.0
             )
         ax.plot(centers, eff_values, marker="o", label="eff")

@@ -14,7 +14,7 @@ class DML_Loss(nn.Module):
     Deep Metric Learning loss
     """
     def __init__(self, hparams):
-        raise NameError("This module is obsolete. Use 'Contrastive' or 'ObjectCondensation' instead")
+        # raise NameError("This module is obsolete. Use 'Contrastive' or 'ObjectCondensation' instead")
         super().__init__()
         print("DEBUG: DML Loss module initiated")
 

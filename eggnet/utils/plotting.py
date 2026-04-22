@@ -8,18 +8,11 @@ from atlasify import atlasify
 import atlasify as atl
 
 
-def plot_eff_vs_eps(
-    eps_data,
-    eval_config,
-    xlabel=r"$\epsilon$",
-    output_filename="track_eff_dbscan_vs_eps.png",
-    selection_subtext="DBSCAN (min_samples = 3)",
-):
-
+def _get_base_subtext(eval_config):
     if eval_config.get("trackML_data"):
         atl.ATLAS = "TrackML Dataset"
 
-    base_subtext = (
+    return (
         (
             r"$\sqrt{s}=14$TeV, $t \bar{t}$, $\langle \mu \rangle = 200$, primaries"
             r" $t \bar{t}$ and soft interactions) " + "\n"
@@ -29,6 +22,15 @@ def plot_eff_vs_eps(
         else r"$p_T > 1$GeV" + "\n"
     )
 
+
+def _plot_efficiency_rate_scan(
+    eps_data,
+    eval_config,
+    xlabel,
+    output_filename,
+    selection_subtext,
+):
+    base_subtext = _get_base_subtext(eval_config)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(eps_data.eps, eps_data.eff, color="black", marker="o", linestyle=":", label="Efficiency")
     ax.plot(
@@ -56,6 +58,26 @@ def plot_eff_vs_eps(
     plt.clf()
 
 
+def plot_eff_vs_eps(eps_data, eval_config):
+    _plot_efficiency_rate_scan(
+        eps_data,
+        eval_config,
+        xlabel=r"$\epsilon$",
+        output_filename="track_eff_dbscan_vs_eps.png",
+        selection_subtext="DBSCAN (min_samples = 3)",
+    )
+
+
+def plot_walkthrough_eff_vs_cutoff(eps_data, eval_config):
+    _plot_efficiency_rate_scan(
+        eps_data,
+        eval_config,
+        xlabel="Distance cutoff",
+        output_filename="track_eff_walkthrough_vs_cutoff.png",
+        selection_subtext="Walkthrough distance cutoff",
+    )
+
+
 def plot_eff_fixed_eps(
     matched_target_particles_hist,
     particles_hist,
@@ -68,18 +90,7 @@ def plot_eff_fixed_eps(
     selection_subtext=None,
 ):
 
-    if eval_config.get("trackML_data"):
-        atl.ATLAS = "TrackML Dataset"
-
-    base_subtext = (
-        (
-            r"$\sqrt{s}=14$TeV, $t \bar{t}$, $\langle \mu \rangle = 200$, primaries"
-            r" $t \bar{t}$ and soft interactions) " + "\n"
-            r"$p_T > 1$GeV, $|\eta| < 4$" + "\n"
-        )
-        if not eval_config.get("trackML_data")
-        else r"$p_T > 1$GeV" + "\n"
-    )
+    base_subtext = _get_base_subtext(eval_config)
 
     eff = float(eps_data[eps_data.eps == eval_config["eps"]].eff.iloc[0])
     dup = float(eps_data[eps_data.eps == eval_config["eps"]].dup.iloc[0])

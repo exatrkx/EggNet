@@ -139,7 +139,7 @@ def cluster_eval(batch, hparams):
     dup = (
         n_matched_target_tracks - n_matched_target_particles
     ) / n_matched_target_particles if n_matched_target_particles != 0 else 0
-    fak = (n_tracks - n_matched_tracks) / n_matched_particles if n_matched_particles != 0 else 0
+    fak = (n_tracks - n_matched_tracks) / n_tracks if n_tracks != 0 else 0
 
     return eff, signal_eff, dup, fak
 

@@ -158,7 +158,8 @@ def _terminate_process_pool(executor, futures=None):
     """Forcefully stop worker processes so Ctrl-C does not hang during exit."""
     _shutdown_executor_now(executor, futures=futures)
 
-    processes = list(getattr(executor, "_processes", {}).values())
+    process_map = getattr(executor, "_processes", None) or {}
+    processes = list(process_map.values())
     for process in processes:
         if process is None:
             continue

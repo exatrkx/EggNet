@@ -7,7 +7,12 @@ import pandas as pd
 
 from eggnet import lightning_modules
 from eggnet.utils.cluster import cluster_and_match
-from eggnet.utils.plotting import plot_eff_vs_eps, plot_eff_fixed_eps, plot_computing_time
+from eggnet.utils.plotting import (
+    plot_computing_time,
+    plot_eff_fixed_eps,
+    plot_eff_vs_eps,
+    plot_walkthrough_eff_vs_cutoff,
+)
 from eggnet.utils.slurm import submit_to_slurm
 from eggnet.models.utils.plotting import (
     aggregate_dml_event_data,
@@ -149,11 +154,9 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             ) = get_dml_eval_scan_data(dml_graph, eval_config, config)
 
             if dml_plot_eff_vs_eps_enabled:
-                plot_eff_vs_eps(
+                plot_walkthrough_eff_vs_cutoff(
                     dml_eps_data,
                     eval_config,
-                    xlabel="Distance cutoff",
-                    selection_subtext="Walkthrough distance cutoff",
                 )
             if dml_plot_eff_fixed_eps_enabled:
                 selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
@@ -261,7 +264,12 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
         eps_data["dup"] = (
             eps_data.n_matched_target_tracks - eps_data.n_matched_target_particles
         ) / eps_data.n_matched_target_particles
-        eps_data["fak"] = (eps_data.n_tracks - eps_data.n_matched_tracks) / eps_data.n_matched_particles
+        eps_data["fak"] = np.divide(
+            eps_data.n_tracks - eps_data.n_matched_tracks,
+            eps_data.n_tracks,
+            out=np.zeros_like(eps_data.n_tracks, dtype=np.float64),
+            where=eps_data.n_tracks > 0,
+        )
 
         if plot_computing_time_enabled:
             time_data["gnn"] = time_data["eggnet"] - time_data["knn"]
