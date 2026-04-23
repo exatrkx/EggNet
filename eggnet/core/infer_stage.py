@@ -8,12 +8,58 @@ from eggnet import lightning_modules, models
 from eggnet.utils.slurm import submit_to_slurm
 
 
+_RUNTIME_DATASET_HPARAM_KEYS = (
+    "input_dir",
+    "data_split",
+    "phi_segmented",
+    "graph_fraction",
+    "graph_adjustment_tol",
+    "min_nodes",
+    "max_nodes",
+    "graph_fraction_adjustment_method",
+    "max_possible_width",
+)
+
+
 def _resolve_walkthrough_output_dir(config, base_output_dir):
     explicit_output_dir = config.get("walkthrough_output_dir")
     if explicit_output_dir:
         return explicit_output_dir
     walkthrough_subdir = config.get("walkthrough_subdir", "walkthrough")
     return os.path.join(base_output_dir, walkthrough_subdir)
+
+
+def _apply_runtime_dataset_overrides(base_model, config):
+    """Use inference-time dataset settings instead of checkpoint defaults."""
+    for key in _RUNTIME_DATASET_HPARAM_KEYS:
+        if key in config:
+            base_model._hparams[key] = config[key]
+
+    # Treat the inference config as authoritative for hard cuts so that
+    # removing or nulling the key disables checkpoint-time filtering.
+    base_model._hparams["hard_cuts"] = config.get("hard_cuts")
+
+
+def _resolve_runtime_execution_overrides(base_model, config, accelerator, devices, num_nodes):
+    """Apply execution settings consistently across the runtime config and hparams."""
+    accelerator = accelerator or config.get(
+        "accelerator", base_model._hparams.get("accelerator", "cuda")
+    )
+    devices = devices if devices is not None else config.get(
+        "devices", base_model._hparams.get("devices", 1)
+    )
+    num_nodes = num_nodes if num_nodes is not None else config.get(
+        "num_nodes", base_model._hparams.get("num_nodes", 1)
+    )
+
+    config["accelerator"] = accelerator
+    config["devices"] = devices
+    config["num_nodes"] = num_nodes
+    base_model._hparams["accelerator"] = accelerator
+    base_model._hparams["devices"] = devices
+    base_model._hparams["num_nodes"] = num_nodes
+
+    return accelerator, devices, num_nodes
 
 
 def infer(
@@ -37,15 +83,17 @@ def infer(
 
     base_model_class = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))
     base_model = base_model_class.load_from_checkpoint(checkpoint)
+    _apply_runtime_dataset_overrides(base_model, config)
     if output_dir is not None:
         base_model._hparams["output_dir"] = output_dir
         config["output_dir"] = output_dir
-    if accelerator is None:
-        accelerator = base_model._hparams.get("accelerator", "cuda")
-    if devices is None:
-        devices = base_model._hparams.get("devices", 1)
-    if num_nodes is None:
-        num_nodes = base_model._hparams.get("num_nodes", 1)
+    accelerator, devices, num_nodes = _resolve_runtime_execution_overrides(
+        base_model,
+        config,
+        accelerator,
+        devices,
+        num_nodes,
+    )
     dataset = list(dataset) if dataset else None
     if dataset is not None:
         base_model._hparams["predict_datasets"] = dataset

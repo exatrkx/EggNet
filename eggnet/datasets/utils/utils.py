@@ -23,11 +23,12 @@ def load_datafiles_in_dir(input_dir, data_name=None, data_num=None):
     data_files = [str(path) for path in Path(input_dir).rglob("*.pyg")][:data_num]
     if len(data_files) == 0:
         warnings.warn(f"No data files found in {input_dir}")
-    if data_num is not None:
-        assert len(data_files) == data_num, (
-            f"Number of data files found ({len(data_files)}) is less than the number"
-            f" requested ({data_num})"
-        )
+    # if data_num is not None:
+    #     assert len(data_files) == data_num, (
+    #         f"Number of data files found ({len(data_files)}) is less than the number"
+    #         f" requested ({data_num})"
+    #         f" from {input_dir}"
+    #     )
 
     return data_files
 

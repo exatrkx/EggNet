@@ -14,18 +14,48 @@ from eggnet.models.fast_walkthrough import FastWalkthrough
 from eggnet.models.utils import cc_and_walk_utils, fast_walkthrough_utils
 from eggnet.models.utils.walkthrough_diagnostics import build_track_particle_diagnostics
 from scipy.spatial import cKDTree
+from tqdm.auto import tqdm
 
 CUTOFF_PROPORTIONS = [0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975, 0.99, 0.995, 0.999]
 
 
 def _build_dml_eps_values(eval_config):
-    eps_values = np.arange(0.05, 0.51, 0.05, dtype=np.float64)
+    configured_eps_values = eval_config.get("eps_values")
+    if configured_eps_values is None:
+        eps_scan_start = float(eval_config.get("eps_scan_start", 0.05))
+        eps_scan_stop = float(eval_config.get("eps_scan_stop", 0.5))
+        eps_scan_step = float(eval_config.get("eps_scan_step", 0.05))
+        if eps_scan_step <= 0.0:
+            raise ValueError("eps_scan_step must be positive.")
+        if eps_scan_stop < eps_scan_start:
+            raise ValueError("eps_scan_stop must be greater than or equal to eps_scan_start.")
+        eps_values = np.arange(
+            eps_scan_start,
+            eps_scan_stop + (0.5 * eps_scan_step),
+            eps_scan_step,
+            dtype=np.float64,
+        )
+    else:
+        eps_values = np.asarray(configured_eps_values, dtype=np.float64).reshape(-1)
+        if eps_values.size == 0:
+            raise ValueError("eps_values must contain at least one cutoff.")
+        eps_values = np.unique(eps_values)
     eval_eps = float(eval_config["eps"])
     if not np.isclose(eps_values, eval_eps).any():
         eps_values = np.sort(
             np.concatenate([eps_values, np.asarray([eval_eps], dtype=np.float64)])
         )
     return eps_values
+
+
+def _get_dml_efficiency_bins(eval_config, include_eta):
+    if eval_config.get("pT_unit", "MeV") == "MeV":
+        pt_min, pt_max = 1000, 50000
+    else:
+        pt_min, pt_max = 1, 50
+    pt_bins = np.logspace(np.log10(pt_min), np.log10(pt_max), 10)
+    eta_bins = np.linspace(-4, 4) if include_eta else None
+    return pt_bins, eta_bins
 
 
 def _extract_target_particles(graph: Data, eval_config: dict, include_eta: bool):
@@ -164,6 +194,320 @@ def _run_walkthrough_reconstruction(graph: Data, hparams: dict):
     return reconstructed_graph
 
 
+def _can_reuse_saved_walkthrough_graph(graph: Data, hparams: dict, cutoff: float):
+    return (
+        np.isclose(float(cutoff), float(hparams["score_cut_cc"]))
+        and hasattr(graph, "hit_track_labels")
+        and getattr(graph, "hit_track_labels") is not None
+    )
+
+
+def _get_dml_reconstructed_graph(graph: Data, hparams: dict, cutoff: float):
+    if _can_reuse_saved_walkthrough_graph(graph, hparams, cutoff):
+        return graph
+    scan_hparams = _get_walkthrough_scan_hparams(hparams, float(cutoff))
+    return _run_walkthrough_reconstruction(graph, scan_hparams)
+
+
+def _get_dataset_size(dataset):
+    try:
+        return len(dataset)
+    except TypeError:
+        return None
+
+
+def _get_dml_knn_class(hparams: dict):
+    return getattr(
+        nearest_neighboring,
+        hparams.get("knn_algorithm", "cu_knn"),
+    )()
+
+
+def _get_dml_track_edges_and_distances(graph: Data, hparams: dict, knn_class=None):
+    if knn_class is None:
+        knn_class = _get_dml_knn_class(hparams)
+    graph_cuda = graph.to("cuda")
+    track_edges = knn_class.get_graph(
+        graph_cuda,
+        1,
+        use_double_metric_learning=True,
+    )
+    distances = get_edge_distances(graph_cuda, edges=track_edges)
+    return graph_cuda, track_edges, distances.detach().cpu()
+
+
+def _get_fake_edges_within_radius(graph: Data, radius=1.5):
+    src = graph.src_embedding.detach().cpu().numpy()
+    tgt = graph.tgt_embedding.detach().cpu().numpy()
+    if src.size == 0 or tgt.size == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
+    pairs = cKDTree(src).sparse_distance_matrix(
+        cKDTree(tgt),
+        radius,
+        output_type="ndarray",
+    )
+    if pairs.size == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
+
+    cand_src = pairs["i"].astype(np.int64, copy=False)
+    cand_tgt = pairs["j"].astype(np.int64, copy=False)
+    n_tgt = int(tgt.shape[0])
+    cand_ids = cand_src * n_tgt + cand_tgt
+
+    true_edges = graph.track_edges.detach().cpu().numpy()
+    if true_edges.size == 0:
+        fake_src = cand_src
+        fake_tgt = cand_tgt
+    else:
+        true_ids = (
+            true_edges[0].astype(np.int64, copy=False) * n_tgt
+            + true_edges[1].astype(np.int64, copy=False)
+        )
+        fake_mask = ~np.isin(cand_ids, true_ids, assume_unique=False)
+        fake_src = cand_src[fake_mask]
+        fake_tgt = cand_tgt[fake_mask]
+
+    if fake_src.size == 0:
+        return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
+    fake_edges = np.vstack((fake_src, fake_tgt))
+    return torch.as_tensor(fake_edges, dtype=torch.long, device=graph.src_embedding.device)
+
+
+def _hist_payload(distance_values):
+    hist, bins = np.histogram(distance_values, bins=100)
+    err = np.zeros_like(hist)
+    ymax = float(hist.max()) if hist.size else 0.0
+    return hist, bins, err, ymax
+
+
+def _plot_distance_histogram_from_values(
+    true_distance_values,
+    output_dir: Path | List[str],
+    plot_false_edges=False,
+    seperate_plots=False,
+    plot_suffix=None,
+    fake_distance_values=None,
+):
+    if isinstance(output_dir, list):
+        output_dir = Path(*output_dir)
+    elif not isinstance(output_dir, Path):
+        output_dir = Path(output_dir)
+
+    def _plot_and_save(distance_values, title, output_path, color="black", label="Edge distance"):
+        hist, bins, err, ymax = _hist_payload(distance_values)
+        ylim = (0.0, ymax * 1.1 if ymax > 0.0 else 1.0)
+        fig, ax = plot_1d_histogram(
+            hist,
+            bins,
+            err,
+            r"$L_2$ Distance",
+            "Count",
+            ylim,
+            label,
+            logy=True,
+            tightlayout=False,
+            color=color,
+        )
+        for prop in CUTOFF_PROPORTIONS:
+            cutoff = _find_cutoff(prop, hist, bins)
+            ax.axvline(cutoff, color="black", linestyle=":", linewidth=1.0)
+            ax.text(
+                cutoff,
+                0.95,
+                f"{prop*100:0.1f}% @ {cutoff:0.2f}",
+                rotation=90,
+                va="top",
+                ha="right",
+                transform=ax.get_xaxis_transform(),
+            )
+        ax.set_title(title)
+        plt.tight_layout()
+        fig.savefig(output_path)
+        plt.clf()
+        print("INFO: Saved distance plot to " + str(output_path))
+
+    def _plot_efficiency_purity(true_values, fake_values):
+        true_sorted = np.sort(true_values)
+        fake_sorted = np.sort(fake_values)
+        if true_sorted.size == 0:
+            return
+
+        max_dist = float(max(true_sorted[-1], fake_sorted[-1] if fake_sorted.size else true_sorted[-1]))
+        bins = np.linspace(0.0, max_dist, 101, dtype=np.float64)
+        cutoffs = bins[1:]
+
+        tp = np.searchsorted(true_sorted, cutoffs, side="right").astype(np.float64)
+        fp = np.searchsorted(fake_sorted, cutoffs, side="right").astype(np.float64)
+
+        total_true = float(true_sorted.size)
+        efficiency = tp / total_true
+        purity = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0.0)
+        err = np.zeros_like(efficiency)
+
+        fig, ax = plot_1d_histogram(
+            efficiency,
+            bins,
+            err,
+            r"$L_2$ Distance Cutoff",
+            "Value",
+            (0.0, 1.02),
+            "Efficiency",
+            logy=False,
+            tightlayout=False,
+            color="black",
+            fmt="o",
+        )
+        plot_1d_histogram(
+            purity,
+            bins,
+            err,
+            r"$L_2$ Distance Cutoff",
+            "Value",
+            (0.0, 1.02),
+            "Purity",
+            canvas=(fig, ax),
+            logy=False,
+            tightlayout=False,
+            color="red",
+            fmt="x",
+        )
+        true_hist_for_cut, true_bins_for_cut = np.histogram(true_values, bins=100)
+        for prop in CUTOFF_PROPORTIONS:
+            cutoff = _find_cutoff(prop, true_hist_for_cut, true_bins_for_cut)
+            ax.axvline(cutoff, color="gray", linestyle=":", linewidth=1.0)
+            ax.text(
+                cutoff,
+                0.95,
+                f"{prop*100:0.1f}% @ {cutoff:0.2f}",
+                rotation=90,
+                va="top",
+                ha="right",
+                transform=ax.get_xaxis_transform(),
+            )
+        ax.set_xlabel(r"$L_2$ Distance Cutoff", ha="right", x=0.95, fontsize=14)
+        ax.set_ylabel("Value", ha="right", y=0.95, fontsize=14)
+        ax.set_title("Edge selection efficiency and purity vs distance cutoff")
+        ax.legend()
+        plt.tight_layout()
+        metrics_output_path = output_dir.joinpath(
+            f"distance_eff_purity_{plot_suffix}.png" if plot_suffix else "distance_eff_purity.png"
+        )
+        fig.savefig(metrics_output_path)
+        plt.clf()
+        print("INFO: Saved efficiency/purity plot to " + str(metrics_output_path))
+
+    output_path = output_dir.joinpath(f"distance_hist_{plot_suffix}.png" if plot_suffix else "distance_hist.png")
+
+    if not plot_false_edges:
+        _plot_and_save(
+            true_distance_values,
+            "Distance between embeddings for true edges",
+            output_path,
+            color="black",
+            label="True edge distance",
+        )
+        return
+
+    if fake_distance_values is None:
+        fake_distance_values = np.asarray([], dtype=np.float64)
+    _plot_efficiency_purity(true_distance_values, fake_distance_values)
+
+    if seperate_plots:
+        _plot_and_save(
+            true_distance_values,
+            "Distance between embeddings for true edges",
+            output_path,
+            color="black",
+            label="True edge distance",
+        )
+        fake_output_path = output_dir.joinpath(
+            f"distance_hist_fake_{plot_suffix}.png" if plot_suffix else "distance_hist_fake.png"
+        )
+        _plot_and_save(
+            fake_distance_values,
+            "Distance between embeddings for fake edges",
+            fake_output_path,
+            color="red",
+            label="Fake edge distance",
+        )
+        return
+
+    true_hist, true_bins, true_err, true_ymax = _hist_payload(true_distance_values)
+    fake_hist, fake_bins, fake_err, fake_ymax = _hist_payload(fake_distance_values)
+    ymax = max(true_ymax, fake_ymax)
+    ylim = (0.0, ymax * 1.1 if ymax > 0.0 else 1.0)
+    fig, ax = plot_1d_histogram(
+        true_hist,
+        true_bins,
+        true_err,
+        r"$L_2$ Distance",
+        "Count",
+        ylim,
+        "True edge distance",
+        logy=True,
+        tightlayout=False,
+        color="black",
+        fmt="o",
+    )
+    plot_1d_histogram(
+        fake_hist,
+        fake_bins,
+        fake_err,
+        r"$L_2$ Distance",
+        "Count",
+        ylim,
+        "Fake edge distance",
+        canvas=(fig, ax),
+        logy=True,
+        tightlayout=False,
+        color="red",
+        fmt="x",
+    )
+    for prop in CUTOFF_PROPORTIONS:
+        cutoff = _find_cutoff(prop, true_hist, true_bins)
+        ax.axvline(cutoff, color="black", linestyle=":", linewidth=1.0)
+    ax.set_title("Distance between embeddings for true and fake edges")
+    ax.legend()
+    plt.tight_layout()
+    fig.savefig(output_path)
+    plt.clf()
+    print("INFO: Saved distance plot to " + str(output_path))
+
+
+def _collect_dml_distance_values(dataset, hparams: dict, plot_false_edges=False):
+    true_distance_values = []
+    fake_distance_values = [] if plot_false_edges else None
+    for graph in dataset:
+        graph_cpu = graph.cpu()
+        distances = get_edge_distances(graph_cpu, edges=None).detach().cpu().numpy()
+        true_distance_values.append(distances)
+        if plot_false_edges:
+            graph_cuda = graph_cpu.to("cuda")
+            fake_edges = _get_fake_edges_within_radius(graph_cuda, radius=1.5)
+            fake_distances = get_edge_distances(graph_cuda, edges=fake_edges).detach().cpu().numpy()
+            fake_distance_values.append(fake_distances)
+
+    true_distance_values = (
+        np.concatenate(true_distance_values)
+        if true_distance_values
+        else np.asarray([], dtype=np.float64)
+    )
+    if plot_false_edges:
+        fake_distance_values = (
+            np.concatenate(fake_distance_values)
+            if fake_distance_values
+            else np.asarray([], dtype=np.float64)
+        )
+    return true_distance_values, fake_distance_values
+
+
+def _get_dml_dataset_cutoffs(dataset, hparams: dict):
+    true_distance_values, _ = _collect_dml_distance_values(dataset, hparams, plot_false_edges=False)
+    hist, bins = np.histogram(true_distance_values, bins=100)
+    cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
+    return cutoffs
+
+
 def get_dml_eval_scan_data(graph: Data, eval_config: dict, hparams: dict):
     include_eta = bool(eval_config.get("plot_eta", False))
     graph_cpu = graph.cpu()
@@ -174,12 +518,7 @@ def get_dml_eval_scan_data(graph: Data, eval_config: dict, hparams: dict):
     )
     eps_values = _build_dml_eps_values(eval_config)
 
-    if eval_config.get("pT_unit", "MeV") == "MeV":
-        pt_min, pt_max = 1000, 50000
-    else:
-        pt_min, pt_max = 1, 50
-    pt_bins = np.logspace(np.log10(pt_min), np.log10(pt_max), 10)
-    eta_bins = np.linspace(-4, 4) if include_eta else None
+    pt_bins, eta_bins = _get_dml_efficiency_bins(eval_config, include_eta)
 
     particles_pt_hist = np.histogram(particles[1].cpu().numpy(), bins=pt_bins)[0]
     particles_eta_hist = (
@@ -271,6 +610,315 @@ def get_dml_eval_scan_data(graph: Data, eval_config: dict, hparams: dict):
         matched_target_particles_eta_hist,
         pt_bins,
         eta_bins,
+    )
+
+
+def get_dml_fixed_eps_eval_data(dataset, eval_config: dict, hparams: dict):
+    include_eta = bool(eval_config.get("plot_eta", False))
+    eval_eps = float(eval_config["eps"])
+    pt_bins, eta_bins = _get_dml_efficiency_bins(eval_config, include_eta)
+
+    particles_pt_hist = np.histogram([], bins=pt_bins)[0]
+    matched_target_particles_pt_hist = np.histogram([], bins=pt_bins)[0]
+    particles_eta_hist = (
+        np.histogram([], bins=eta_bins)[0]
+        if include_eta
+        else None
+    )
+    matched_target_particles_eta_hist = (
+        np.histogram([], bins=eta_bins)[0]
+        if include_eta
+        else None
+    )
+
+    totals = {
+        "n_particles": 0,
+        "n_matched_particles": 0,
+        "n_matched_tracks": 0,
+        "n_matched_target_particles": 0,
+        "n_matched_target_tracks": 0,
+        "n_tracks": 0,
+    }
+
+    dataset_size = _get_dataset_size(dataset)
+    progress = tqdm(
+        dataset,
+        total=dataset_size,
+        desc=f"DML fixed-eps eval (eps={eval_eps:g})",
+        unit="event",
+        dynamic_ncols=True,
+    )
+    for graph in progress:
+        graph_cpu = graph.cpu()
+        target_mask, particles = _extract_target_particles(
+            graph_cpu,
+            eval_config,
+            include_eta=include_eta,
+        )
+        particles_pt_hist += np.histogram(
+            particles[1].cpu().numpy(),
+            bins=pt_bins,
+        )[0]
+        if include_eta:
+            particles_eta_hist += np.histogram(
+                particles[2].cpu().numpy(),
+                bins=eta_bins,
+            )[0]
+
+        reconstructed_graph = _get_dml_reconstructed_graph(
+            graph_cpu,
+            hparams,
+            eval_eps,
+        )
+        match_data = _match_dml_tracks(
+            reconstructed_graph,
+            reconstructed_graph.hit_track_labels,
+            target_mask,
+            include_eta=include_eta,
+        )
+        totals["n_particles"] += int(particles.shape[1])
+        totals["n_matched_particles"] += int(match_data["n_matched_particles"])
+        totals["n_matched_tracks"] += int(match_data["n_matched_tracks"])
+        totals["n_matched_target_particles"] += int(match_data["n_matched_target_particles"])
+        totals["n_matched_target_tracks"] += int(match_data["n_matched_target_tracks"])
+        totals["n_tracks"] += int(match_data["n_tracks"])
+
+        matched_target_particles = match_data["matched_target_particles"]
+        matched_target_particles_pt_hist += np.histogram(
+            matched_target_particles[1].cpu().numpy(),
+            bins=pt_bins,
+        )[0]
+        if include_eta:
+            matched_target_particles_eta_hist += np.histogram(
+                matched_target_particles[2].cpu().numpy(),
+                bins=eta_bins,
+            )[0]
+
+    fixed_eps_data = pd.DataFrame(
+        [
+            {
+                "eps": eval_eps,
+                **totals,
+            }
+        ]
+    )
+    n_particles = fixed_eps_data["n_particles"].to_numpy(dtype=np.float64)
+    n_matched_target_particles = fixed_eps_data["n_matched_target_particles"].to_numpy(dtype=np.float64)
+    n_tracks = fixed_eps_data["n_tracks"].to_numpy(dtype=np.float64)
+    fixed_eps_data["eff"] = np.divide(
+        n_matched_target_particles,
+        n_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_particles > 0.0,
+    )
+    fixed_eps_data["dup"] = np.divide(
+        fixed_eps_data["n_matched_target_tracks"].to_numpy(dtype=np.float64) - n_matched_target_particles,
+        n_matched_target_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_matched_target_particles > 0.0,
+    )
+    fixed_eps_data["fak"] = np.divide(
+        n_tracks - fixed_eps_data["n_matched_tracks"].to_numpy(dtype=np.float64),
+        n_tracks,
+        out=np.zeros_like(n_tracks),
+        where=n_tracks > 0.0,
+    )
+
+    return (
+        fixed_eps_data,
+        particles_pt_hist,
+        matched_target_particles_pt_hist,
+        particles_eta_hist,
+        matched_target_particles_eta_hist,
+        pt_bins,
+        eta_bins,
+    )
+
+
+def get_dml_eval_scan_dataset_data(
+    dataset,
+    eval_config: dict,
+    hparams: dict,
+    include_fixed_eps: bool = False,
+):
+    eps_values = _build_dml_eps_values(eval_config)
+    eval_eps = float(eval_config["eps"])
+    include_eta = include_fixed_eps and bool(eval_config.get("plot_eta", False))
+    rows = {
+        float(eps_value): {
+            "eps": float(eps_value),
+            "n_particles": 0,
+            "n_matched_particles": 0,
+            "n_matched_tracks": 0,
+            "n_matched_target_particles": 0,
+            "n_matched_target_tracks": 0,
+            "n_tracks": 0,
+        }
+        for eps_value in eps_values
+    }
+    fixed_eps_data = None
+    if include_fixed_eps:
+        pt_bins, eta_bins = _get_dml_efficiency_bins(eval_config, include_eta)
+        particles_pt_hist = np.histogram([], bins=pt_bins)[0]
+        matched_target_particles_pt_hist = np.histogram([], bins=pt_bins)[0]
+        particles_eta_hist = (
+            np.histogram([], bins=eta_bins)[0]
+            if include_eta
+            else None
+        )
+        matched_target_particles_eta_hist = (
+            np.histogram([], bins=eta_bins)[0]
+            if include_eta
+            else None
+        )
+        fixed_eps_totals = {
+            "n_particles": 0,
+            "n_matched_particles": 0,
+            "n_matched_tracks": 0,
+            "n_matched_target_particles": 0,
+            "n_matched_target_tracks": 0,
+            "n_tracks": 0,
+        }
+
+    dataset_size = _get_dataset_size(dataset)
+    total_reconstructions = None
+    if dataset_size is not None:
+        total_reconstructions = dataset_size * len(eps_values)
+    with tqdm(
+        total=total_reconstructions,
+        desc=f"DML cutoff scan ({len(eps_values)} cutoffs)",
+        unit="reco",
+        dynamic_ncols=True,
+    ) as progress:
+        for graph in dataset:
+            graph_cpu = graph.cpu()
+            target_mask, particles = _extract_target_particles(
+                graph_cpu,
+                eval_config,
+                include_eta=include_eta,
+            )
+            n_particles = int(particles.shape[1])
+            if include_fixed_eps:
+                particles_pt_hist += np.histogram(
+                    particles[1].cpu().numpy(),
+                    bins=pt_bins,
+                )[0]
+                if include_eta:
+                    particles_eta_hist += np.histogram(
+                        particles[2].cpu().numpy(),
+                        bins=eta_bins,
+                    )[0]
+            for eps_value in eps_values:
+                reconstructed_graph = _get_dml_reconstructed_graph(
+                    graph_cpu,
+                    hparams,
+                    float(eps_value),
+                )
+                collect_fixed_eps = include_fixed_eps and np.isclose(
+                    float(eps_value),
+                    eval_eps,
+                )
+                match_data = _match_dml_tracks(
+                    reconstructed_graph,
+                    reconstructed_graph.hit_track_labels,
+                    target_mask,
+                    include_eta=collect_fixed_eps and include_eta,
+                )
+                row = rows[float(eps_value)]
+                row["n_particles"] += n_particles
+                row["n_matched_particles"] += int(match_data["n_matched_particles"])
+                row["n_matched_tracks"] += int(match_data["n_matched_tracks"])
+                row["n_matched_target_particles"] += int(match_data["n_matched_target_particles"])
+                row["n_matched_target_tracks"] += int(match_data["n_matched_target_tracks"])
+                row["n_tracks"] += int(match_data["n_tracks"])
+                if collect_fixed_eps:
+                    fixed_eps_totals["n_particles"] += n_particles
+                    fixed_eps_totals["n_matched_particles"] += int(match_data["n_matched_particles"])
+                    fixed_eps_totals["n_matched_tracks"] += int(match_data["n_matched_tracks"])
+                    fixed_eps_totals["n_matched_target_particles"] += int(match_data["n_matched_target_particles"])
+                    fixed_eps_totals["n_matched_target_tracks"] += int(match_data["n_matched_target_tracks"])
+                    fixed_eps_totals["n_tracks"] += int(match_data["n_tracks"])
+                    matched_target_particles = match_data["matched_target_particles"]
+                    matched_target_particles_pt_hist += np.histogram(
+                        matched_target_particles[1].cpu().numpy(),
+                        bins=pt_bins,
+                    )[0]
+                    if include_eta:
+                        matched_target_particles_eta_hist += np.histogram(
+                            matched_target_particles[2].cpu().numpy(),
+                            bins=eta_bins,
+                        )[0]
+                progress.update(1)
+
+    eps_data = pd.DataFrame([rows[float(eps_value)] for eps_value in eps_values])
+    n_particles = eps_data["n_particles"].to_numpy(dtype=np.float64)
+    n_matched_target_particles = eps_data["n_matched_target_particles"].to_numpy(dtype=np.float64)
+    n_tracks = eps_data["n_tracks"].to_numpy(dtype=np.float64)
+    eps_data["eff"] = np.divide(
+        n_matched_target_particles,
+        n_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_particles > 0.0,
+    )
+    eps_data["dup"] = np.divide(
+        eps_data["n_matched_target_tracks"].to_numpy(dtype=np.float64) - n_matched_target_particles,
+        n_matched_target_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_matched_target_particles > 0.0,
+    )
+    eps_data["fak"] = np.divide(
+        n_tracks - eps_data["n_matched_tracks"].to_numpy(dtype=np.float64),
+        n_tracks,
+        out=np.zeros_like(n_tracks),
+        where=n_tracks > 0.0,
+    )
+    if not include_fixed_eps:
+        return eps_data
+
+    fixed_eps_data = pd.DataFrame(
+        [
+            {
+                "eps": eval_eps,
+                **fixed_eps_totals,
+            }
+        ]
+    )
+    n_particles = fixed_eps_data["n_particles"].to_numpy(dtype=np.float64)
+    n_matched_target_particles = fixed_eps_data["n_matched_target_particles"].to_numpy(
+        dtype=np.float64
+    )
+    n_tracks = fixed_eps_data["n_tracks"].to_numpy(dtype=np.float64)
+    fixed_eps_data["eff"] = np.divide(
+        n_matched_target_particles,
+        n_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_particles > 0.0,
+    )
+    fixed_eps_data["dup"] = np.divide(
+        fixed_eps_data["n_matched_target_tracks"].to_numpy(dtype=np.float64)
+        - n_matched_target_particles,
+        n_matched_target_particles,
+        out=np.zeros_like(n_matched_target_particles),
+        where=n_matched_target_particles > 0.0,
+    )
+    fixed_eps_data["fak"] = np.divide(
+        n_tracks - fixed_eps_data["n_matched_tracks"].to_numpy(dtype=np.float64),
+        n_tracks,
+        out=np.zeros_like(n_tracks),
+        where=n_tracks > 0.0,
+    )
+
+    return (
+        eps_data,
+        (
+            fixed_eps_data,
+            particles_pt_hist,
+            matched_target_particles_pt_hist,
+            particles_eta_hist,
+            matched_target_particles_eta_hist,
+            pt_bins,
+            eta_bins,
+        ),
     )
 
 
@@ -1048,235 +1696,29 @@ def plot_distance_histogram(graph:Data, output_dir:Path|List[str], plot_false_ed
     if "graph" is of type Data: runs on only the true edges
     else if "graph" is a list of edges
     """
-    if isinstance(output_dir, list):
-        output_dir = Path(*output_dir)
-    elif not isinstance(output_dir, Path):
-        output_dir = Path(output_dir)
-
-    def _hist_payload(distance_values):
-        hist, bins = np.histogram(distance_values, bins=100)
-        err = np.zeros_like(hist)
-        ymax = float(hist.max()) if hist.size else 0.0
-        return hist, bins, err, ymax
-
-    def _plot_and_save(distance_values, title, output_path, color="black", label="Edge distance"):
-        hist, bins, err, ymax = _hist_payload(distance_values)
-        ylim = (0.0, ymax * 1.1 if ymax > 0.0 else 1.0)
-        fig, ax = plot_1d_histogram(
-            hist,
-            bins,
-            err,
-            r"$L_2$ Distance",
-            "Count",
-            ylim,
-            label,
-            logy=True,
-            tightlayout=False,
-            color=color,
+    if isinstance(graph, Data):
+        distances = get_edge_distances(graph, edges=None)
+        distance_values = distances.detach().cpu().numpy()
+        fake_distance_values = None
+        if plot_false_edges:
+            fake_edges = _get_fake_edges_within_radius(graph.to("cuda"), radius=1.5)
+            fake_distances = get_edge_distances(graph.to("cuda"), edges=fake_edges)
+            fake_distance_values = fake_distances.detach().cpu().numpy()
+    else:
+        distance_values, fake_distance_values = _collect_dml_distance_values(
+            graph,
+            {},
+            plot_false_edges=plot_false_edges,
         )
-        for prop in CUTOFF_PROPORTIONS:
-            cutoff = _find_cutoff(prop, hist, bins)
-            ax.axvline(cutoff, color="black", linestyle=":", linewidth=1.0)
-            ax.text(
-                cutoff,
-                0.95,
-                f"{prop*100:0.1f}% @ {cutoff:0.2f}",
-                rotation=90,
-                va="top",
-                ha="right",
-                transform=ax.get_xaxis_transform(),
-            )
-        ax.set_title(title)
-        plt.tight_layout()
-        fig.savefig(output_path)
-        plt.clf()
-        print("INFO: Saved distance plot to " + str(output_path))
 
-    def _plot_efficiency_purity(true_values, fake_values):
-        true_sorted = np.sort(true_values)
-        fake_sorted = np.sort(fake_values)
-        if true_sorted.size == 0:
-            return
-
-        max_dist = float(max(true_sorted[-1], fake_sorted[-1] if fake_sorted.size else true_sorted[-1]))
-        bins = np.linspace(0.0, max_dist, 101, dtype=np.float64)
-        cutoffs = bins[1:]
-
-        tp = np.searchsorted(true_sorted, cutoffs, side="right").astype(np.float64)
-        fp = np.searchsorted(fake_sorted, cutoffs, side="right").astype(np.float64)
-
-        total_true = float(true_sorted.size)
-        efficiency = tp / total_true
-        purity = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0.0)
-        err = np.zeros_like(efficiency)
-
-        fig, ax = plot_1d_histogram(
-            efficiency,
-            bins,
-            err,
-            r"$L_2$ Distance Cutoff",
-            "Value",
-            (0.0, 1.02),
-            "Efficiency",
-            logy=False,
-            tightlayout=False,
-            color="black",
-            fmt="o",
-        )
-        plot_1d_histogram(
-            purity,
-            bins,
-            err,
-            r"$L_2$ Distance Cutoff",
-            "Value",
-            (0.0, 1.02),
-            "Purity",
-            canvas=(fig, ax),
-            logy=False,
-            tightlayout=False,
-            color="red",
-            fmt="x",
-        )
-        true_hist_for_cut, true_bins_for_cut = np.histogram(true_values, bins=100)
-        for prop in CUTOFF_PROPORTIONS:
-            cutoff = _find_cutoff(prop, true_hist_for_cut, true_bins_for_cut)
-            ax.axvline(cutoff, color="gray", linestyle=":", linewidth=1.0)
-            ax.text(
-                cutoff,
-                0.95,
-                f"{prop*100:0.1f}% @ {cutoff:0.2f}",
-                rotation=90,
-                va="top",
-                ha="right",
-                transform=ax.get_xaxis_transform(),
-            )
-        ax.set_xlabel(r"$L_2$ Distance Cutoff", ha="right", x=0.95, fontsize=14)
-        ax.set_ylabel("Value", ha="right", y=0.95, fontsize=14)
-        ax.set_title("Edge selection efficiency and purity vs distance cutoff")
-        ax.legend()
-        plt.tight_layout()
-        metrics_output_path = output_dir.joinpath(
-            f"distance_eff_purity_{plot_suffix}.png" if plot_suffix else "distance_eff_purity.png"
-        )
-        fig.savefig(metrics_output_path)
-        plt.clf()
-        print("INFO: Saved efficiency/purity plot to " + str(metrics_output_path))
-
-    def _fake_edges_within_radius(radius=1.5):
-        src = graph.src_embedding.detach().cpu().numpy()
-        tgt = graph.tgt_embedding.detach().cpu().numpy()
-        if src.size == 0 or tgt.size == 0:
-            return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
-        pairs = cKDTree(src).sparse_distance_matrix(
-            cKDTree(tgt),
-            radius,
-            output_type="ndarray",
-        )
-        if pairs.size == 0:
-            return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
-
-        cand_src = pairs["i"].astype(np.int64, copy=False)
-        cand_tgt = pairs["j"].astype(np.int64, copy=False)
-        n_tgt = int(tgt.shape[0])
-        cand_ids = cand_src * n_tgt + cand_tgt
-
-        true_edges = graph.track_edges.detach().cpu().numpy()
-        if true_edges.size == 0:
-            fake_src = cand_src
-            fake_tgt = cand_tgt
-        else:
-            true_ids = (
-                true_edges[0].astype(np.int64, copy=False) * n_tgt
-                + true_edges[1].astype(np.int64, copy=False)
-            )
-            fake_mask = ~np.isin(cand_ids, true_ids, assume_unique=False)
-            fake_src = cand_src[fake_mask]
-            fake_tgt = cand_tgt[fake_mask]
-
-        if fake_src.size == 0:
-            return torch.empty((2, 0), dtype=torch.long, device=graph.src_embedding.device)
-        fake_edges = np.vstack((fake_src, fake_tgt))
-        return torch.as_tensor(fake_edges, dtype=torch.long, device=graph.src_embedding.device)
-
-    distances = get_edge_distances(graph, edges=None)
-    distance_values = distances.detach().cpu().numpy()
-    output_path = output_dir.joinpath(f"distance_hist_{plot_suffix}.png" if plot_suffix else "distance_hist.png")
-
-    if not plot_false_edges:
-        _plot_and_save(
-            distance_values,
-            "Distance between embeddings for true edges",
-            output_path,
-            color="black",
-            label="True edge distance",
-        )
-        return
-
-    fake_edges = _fake_edges_within_radius(radius=1.5)
-    fake_distances = get_edge_distances(graph, edges=fake_edges)
-    fake_distance_values = fake_distances.detach().cpu().numpy()
-    _plot_efficiency_purity(distance_values, fake_distance_values)
-
-    if seperate_plots:
-        _plot_and_save(
-            distance_values,
-            "Distance between embeddings for true edges",
-            output_path,
-            color="black",
-            label="True edge distance",
-        )
-        fake_output_path = output_dir.joinpath(
-            f"distance_hist_fake_{plot_suffix}.png" if plot_suffix else "distance_hist_fake.png"
-        )
-        _plot_and_save(
-            fake_distance_values,
-            "Distance between embeddings for fake edges",
-            fake_output_path,
-            color="red",
-            label="Fake edge distance",
-        )
-        return
-
-    true_hist, true_bins, true_err, true_ymax = _hist_payload(distance_values)
-    fake_hist, fake_bins, fake_err, fake_ymax = _hist_payload(fake_distance_values)
-    ymax = max(true_ymax, fake_ymax)
-    ylim = (0.0, ymax * 1.1 if ymax > 0.0 else 1.0)
-    fig, ax = plot_1d_histogram(
-        true_hist,
-        true_bins,
-        true_err,
-        r"$L_2$ Distance",
-        "Count",
-        ylim,
-        "True edge distance",
-        logy=True,
-        tightlayout=False,
-        color="black",
-        fmt="o",
+    _plot_distance_histogram_from_values(
+        distance_values,
+        output_dir,
+        plot_false_edges=plot_false_edges,
+        seperate_plots=seperate_plots,
+        plot_suffix=plot_suffix,
+        fake_distance_values=fake_distance_values,
     )
-    plot_1d_histogram(
-        fake_hist,
-        fake_bins,
-        fake_err,
-        r"$L_2$ Distance",
-        "Count",
-        ylim,
-        "Fake edge distance",
-        canvas=(fig, ax),
-        logy=True,
-        tightlayout=False,
-        color="red",
-        fmt="x",
-    )
-    for prop in CUTOFF_PROPORTIONS:
-        cutoff = _find_cutoff(prop, true_hist, true_bins)
-        ax.axvline(cutoff, color="black", linestyle=":", linewidth=1.0)
-    ax.set_title("Distance between embeddings for true and fake edges")
-    ax.legend()
-    plt.tight_layout()
-    fig.savefig(output_path)
-    plt.clf()
-    print("INFO: Saved distance plot to " + str(output_path))
         
 
 def _find_cutoff(proportion:float, hist, bins):
@@ -1304,30 +1746,30 @@ def plot_cc(graph:Data, output_dir:Path|List[str], hparams:dict = {}, output_suf
         output_dir = Path(*output_dir)
     elif not isinstance(output_dir, Path):
         output_dir = Path(output_dir)
-    knn_class:nearest_neighboring.abstract_knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
-    graph = graph.to("cuda")
-    track_edges = knn_class.get_graph(
-        graph,
-        1,
-        use_double_metric_learning=True,
-    )
-    distances = get_edge_distances(graph, edges = track_edges)
-    distances_cpu = distances.detach().cpu()
-    distance_values = distances_cpu.numpy()
-    hist, bins = np.histogram(distance_values, bins=100)
-    cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
-    n_components = []
-    if track_edges.numel() == 0:
-        n_components = [0] * len(cutoffs)
+    if isinstance(graph, Data):
+        cutoffs = None
+        graphs = [graph]
     else:
-        for cutoff in cutoffs:
+        graphs = graph
+        cutoffs = _get_dml_dataset_cutoffs(graphs, hparams)
+    if cutoffs is None:
+        _, track_edges, distances_cpu = _get_dml_track_edges_and_distances(graphs[0], hparams, _get_dml_knn_class(hparams))
+        hist, bins = np.histogram(distances_cpu.numpy(), bins=100)
+        cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
+        graphs = [graphs[0]]
+
+    knn_class = _get_dml_knn_class(hparams)
+    n_components = np.zeros(len(cutoffs), dtype=np.int64)
+    for event in graphs:
+        _, track_edges, distances_cpu = _get_dml_track_edges_and_distances(event, hparams, knn_class)
+        if track_edges.numel() == 0:
+            continue
+        for i, cutoff in enumerate(cutoffs):
             mask = distances_cpu < cutoff
             if not mask.any().item():
-                n_components.append(0)
                 continue
             edge_index = track_edges[:, mask]
             if edge_index.numel() == 0:
-                n_components.append(0)
                 continue
             nodes, inv = torch.unique(edge_index, return_inverse=True)
             edge_index = inv.view(edge_index.shape)
@@ -1337,7 +1779,7 @@ def plot_cc(graph:Data, output_dir:Path|List[str], hparams:dict = {}, output_suf
             n_comp, _ = connected_components(
                 csgraph=adj_matrix, directed=True, connection="weak"
             )
-            n_components.append(int(n_comp))
+            n_components[i] += int(n_comp)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(cutoffs, n_components, color="black", linestyle="-")
     ax.set_xlabel("Cutoff", ha="right", x=0.95, fontsize=14)
@@ -1355,42 +1797,42 @@ def plot_simple_graphs(graph:Data, output_dir:Path|List[str], hparams:dict = {},
         output_dir = Path(*output_dir)
     elif not isinstance(output_dir, Path):
         output_dir = Path(output_dir)
-    knn_class:nearest_neighboring.abstract_knn = getattr(nearest_neighboring, hparams.get("knn_algorithm", "cu_knn"))()
-    graph = graph.to("cuda")
-    track_edges = knn_class.get_graph(
-        graph,
-        1,
-        use_double_metric_learning=True,
-    )
-    distances = get_edge_distances(graph, edges=track_edges)
-    distances_cpu = distances.detach().cpu()
-    distance_values = distances_cpu.numpy()
-    hist, bins = np.histogram(distance_values, bins=100)
-    cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
-
-    simple_components = []
-    if track_edges.numel() == 0:
-        simple_components = [0] * len(cutoffs)
+    if isinstance(graph, Data):
+        cutoffs = None
+        graphs = [graph]
     else:
+        graphs = graph
+        cutoffs = _get_dml_dataset_cutoffs(graphs, hparams)
+    if cutoffs is None:
+        _, track_edges, distances_cpu = _get_dml_track_edges_and_distances(graphs[0], hparams, _get_dml_knn_class(hparams))
+        hist, bins = np.histogram(distances_cpu.numpy(), bins=100)
+        cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
+        graphs = [graphs[0]]
+
+    knn_class = _get_dml_knn_class(hparams)
+    simple_components = np.zeros(len(cutoffs), dtype=np.int64)
+    for event in graphs:
+        graph_cpu = event.cpu()
+        _, track_edges, distances_cpu = _get_dml_track_edges_and_distances(event, hparams, knn_class)
+        if track_edges.numel() == 0:
+            continue
         track_edges_cpu = track_edges.detach().cpu()
-        hit_id = graph.hit_id.detach().cpu() if hasattr(graph, "hit_id") else torch.arange(int(graph.num_nodes))
-        for cutoff in cutoffs:
+        hit_id = graph_cpu.hit_id.detach().cpu() if hasattr(graph_cpu, "hit_id") else torch.arange(int(graph_cpu.num_nodes))
+        for i, cutoff in enumerate(cutoffs):
             mask = distances_cpu < cutoff
             if not mask.any().item():
-                simple_components.append(0)
                 continue
             edge_index = track_edges_cpu[:, mask]
             if edge_index.numel() == 0:
-                simple_components.append(0)
                 continue
             filtered_graph = Data(
                 edge_index=edge_index,
                 track_edges=edge_index,
-                num_nodes=int(graph.num_nodes),
+                num_nodes=int(graph_cpu.num_nodes),
                 hit_id=hit_id,
             )
             simple_paths, _ = get_simple_path(filtered_graph)
-            simple_components.append(len(simple_paths))
+            simple_components[i] += len(simple_paths)
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(cutoffs, simple_components, color="black", linestyle="-")
@@ -1410,72 +1852,78 @@ def plot_cutoff_efficiency(graph:Data, output_dir:Path|List[str], hparams:dict =
     elif not isinstance(output_dir, Path):
         output_dir = Path(output_dir)
 
-    if not hasattr(graph, "hit_particle_id"):
-        raise AttributeError("plot_efficiency requires graph.hit_particle_id")
-
-    knn_class:nearest_neighboring.abstract_knn = getattr(
-        nearest_neighboring, hparams.get("knn_algorithm", "cu_knn")
-    )()
-    graph = graph.to("cuda")
-    track_edges = knn_class.get_graph(
-        graph,
-        1,
-        use_double_metric_learning=True,
-    )
-    distances = get_edge_distances(graph, edges=track_edges)
-    distances_cpu = distances.detach().cpu()
-    distance_values = distances_cpu.numpy()
-    hist, bins = np.histogram(distance_values, bins=100)
-    cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
-
-    hit_particle_id = graph.hit_particle_id.detach().cpu().long()
-    valid_hit_mask = hit_particle_id != 0
-
-    if not valid_hit_mask.any().item():
-        efficiencies = [0.0] * len(cutoffs)
+    if isinstance(graph, Data):
+        cutoffs = None
+        graphs = [graph]
     else:
+        graphs = graph
+        cutoffs = _get_dml_dataset_cutoffs(graphs, hparams)
+    if cutoffs is None:
+        _, _, distances_cpu = _get_dml_track_edges_and_distances(graphs[0], hparams, _get_dml_knn_class(hparams))
+        hist, bins = np.histogram(distances_cpu.numpy(), bins=100)
+        cutoffs = [_find_cutoff(prop, hist, bins) for prop in CUTOFF_PROPORTIONS]
+        graphs = [graphs[0]]
+
+    knn_class = _get_dml_knn_class(hparams)
+    matched_particles = np.zeros(len(cutoffs), dtype=np.float64)
+    total_particles = np.zeros(len(cutoffs), dtype=np.float64)
+    for event in graphs:
+        graph_cpu = event.cpu()
+        if not hasattr(graph_cpu, "hit_particle_id"):
+            raise AttributeError("plot_efficiency requires graph.hit_particle_id")
+        _, track_edges, distances_cpu = _get_dml_track_edges_and_distances(event, hparams, knn_class)
+        hit_particle_id = graph_cpu.hit_particle_id.detach().cpu().long()
+        valid_hit_mask = hit_particle_id != 0
+        if not valid_hit_mask.any().item():
+            continue
+
         valid_particle_ids = hit_particle_id[valid_hit_mask]
         _, hit_particle_idx = torch.unique(valid_particle_ids, return_inverse=True)
         n_particles = int(hit_particle_idx.max().item()) + 1
         total_hits_per_particle = torch.bincount(
             hit_particle_idx, minlength=n_particles
         ).float()
-
-        node_particle_idx = torch.full((int(graph.num_nodes),), -1, dtype=torch.long)
+        node_particle_idx = torch.full((int(graph_cpu.num_nodes),), -1, dtype=torch.long)
         node_particle_idx[valid_hit_mask] = hit_particle_idx
-
         if track_edges.numel() == 0:
-            efficiencies = [0.0] * len(cutoffs)
-        else:
-            track_edges_cpu = track_edges.detach().cpu()
-            sort_idx = torch.argsort(distances_cpu)
-            sorted_edges = track_edges_cpu[:, sort_idx]
-            sorted_distances = distances_cpu[sort_idx].numpy()
+            total_particles += n_particles
+            continue
+        track_edges_cpu = track_edges.detach().cpu()
+        sort_idx = torch.argsort(distances_cpu)
+        sorted_edges = track_edges_cpu[:, sort_idx]
+        sorted_distances = distances_cpu[sort_idx].numpy()
 
-            node_captured = torch.zeros(int(graph.num_nodes), dtype=torch.bool)
-            captured_hits_per_particle = torch.zeros(n_particles, dtype=torch.float32)
-            efficiencies = []
-            edge_ptr = 0
+        node_captured = torch.zeros(int(graph_cpu.num_nodes), dtype=torch.bool)
+        captured_hits_per_particle = torch.zeros(n_particles, dtype=torch.float32)
+        edge_ptr = 0
 
-            for cutoff in cutoffs:
-                next_ptr = int(np.searchsorted(sorted_distances, cutoff, side="left"))
-                if next_ptr > edge_ptr:
-                    new_nodes = torch.unique(
-                        sorted_edges[:, edge_ptr:next_ptr].reshape(-1)
-                    )
-                    new_nodes = new_nodes[~node_captured[new_nodes]]
-                    if new_nodes.numel() > 0:
-                        node_captured[new_nodes] = True
-                        new_particle_idx = node_particle_idx[new_nodes]
-                        new_particle_idx = new_particle_idx[new_particle_idx >= 0]
-                        if new_particle_idx.numel() > 0:
-                            captured_hits_per_particle += torch.bincount(
-                                new_particle_idx, minlength=n_particles
-                            ).float()
-                    edge_ptr = next_ptr
+        for i, cutoff in enumerate(cutoffs):
+            next_ptr = int(np.searchsorted(sorted_distances, cutoff, side="left"))
+            if next_ptr > edge_ptr:
+                new_nodes = torch.unique(
+                    sorted_edges[:, edge_ptr:next_ptr].reshape(-1)
+                )
+                new_nodes = new_nodes[~node_captured[new_nodes]]
+                if new_nodes.numel() > 0:
+                    node_captured[new_nodes] = True
+                    new_particle_idx = node_particle_idx[new_nodes]
+                    new_particle_idx = new_particle_idx[new_particle_idx >= 0]
+                    if new_particle_idx.numel() > 0:
+                        captured_hits_per_particle += torch.bincount(
+                            new_particle_idx, minlength=n_particles
+                        ).float()
+                edge_ptr = next_ptr
 
-                captured_tracks = captured_hits_per_particle > (0.5 * total_hits_per_particle)
-                efficiencies.append(float(captured_tracks.float().mean().item()))
+            captured_tracks = captured_hits_per_particle > (0.5 * total_hits_per_particle)
+            matched_particles[i] += float(captured_tracks.sum().item())
+            total_particles[i] += float(n_particles)
+
+    efficiencies = np.divide(
+        matched_particles,
+        total_particles,
+        out=np.zeros_like(matched_particles),
+        where=total_particles > 0.0,
+    )
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(cutoffs, efficiencies, color="black", linestyle="-")

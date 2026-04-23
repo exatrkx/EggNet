@@ -16,6 +16,8 @@ from eggnet.utils.plotting import (
 from eggnet.utils.slurm import submit_to_slurm
 from eggnet.models.utils.plotting import (
     aggregate_dml_event_data,
+    get_dml_fixed_eps_eval_data,
+    get_dml_eval_scan_dataset_data,
     get_dml_eval_scan_data,
     plot_branching_diagnostics,
     plot_distance_histogram,
@@ -86,10 +88,25 @@ def _validate_dml_eval_config(eval_config):
         )
 
 
-def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm):
+def _get_dataset_index(dataset_name):
+    return {
+        "trainset": 0,
+        "valset": 1,
+        "testset": 2,
+    }[dataset_name]
+
+
+def eval(config_file, eval_config_file, output_dir, accelerator, dataset, max_events, slurm):
 
     if slurm:
-        eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset)
+        eval_slurm(
+            config_file,
+            eval_config_file,
+            output_dir,
+            accelerator,
+            dataset,
+            max_events,
+        )
         return
 
     with open(config_file, "r") as f:
@@ -107,6 +124,16 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     eval_config["output_dir"] = plot_output_dir
 
     data_config = dict(config)
+    if max_events is not None:
+        data_split = list(data_config["data_split"])
+        dataset_index = _get_dataset_index(dataset)
+        current_limit = int(data_split[dataset_index])
+        if current_limit > 0:
+            data_split[dataset_index] = min(current_limit, max_events)
+        else:
+            data_split[dataset_index] = max_events
+        data_config["data_split"] = data_split
+        print(f"Limiting {dataset} eval to {data_split[dataset_index]} files")
     if config.get("double_metric_learning", False):
         _validate_dml_eval_config(eval_config)
         data_config["output_dir"] = _resolve_walkthrough_output_dir(
@@ -124,46 +151,61 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
     data = getattr(base_model, dataset)
 
     if config.get("double_metric_learning", False):
-        dml_graph = data.get(0)
         if (eval_config.get("plot_distance_histogram")):
             plot_distance_histogram(
-                dml_graph,
+                data,
                 eval_config["output_dir"], 
                 plot_false_edges=True,
                 seperate_plots=False,
                 plot_suffix=dataset)
         if (eval_config.get("plot_cc")):
-            plot_cc(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+            plot_cc(data, eval_config["output_dir"], hparams=config, output_suffix=dataset)
         if (eval_config.get("plot_simple_path_purity")):
-            plot_simple_graphs(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+            plot_simple_graphs(data, eval_config["output_dir"], hparams=config, output_suffix=dataset)
         if (eval_config.get("plot_cutoff_efficiency")):
-            plot_cutoff_efficiency(dml_graph, eval_config["output_dir"], hparams=config, output_suffix=dataset)
+            plot_cutoff_efficiency(data, eval_config["output_dir"], hparams=config, output_suffix=dataset)
 
         dml_plot_eta_enabled = bool(eval_config.get("plot_eta", False))
         dml_plot_eff_vs_eps_enabled = bool(eval_config.get("plot_eff_vs_eps", False))
         dml_plot_eff_fixed_eps_enabled = bool(eval_config.get("plot_eff_fixed_eps", False))
-        if dml_plot_eta_enabled or dml_plot_eff_vs_eps_enabled or dml_plot_eff_fixed_eps_enabled:
-            (
+        dml_fixed_eps_results = None
+        if dml_plot_eff_vs_eps_enabled:
+            if dml_plot_eff_fixed_eps_enabled or dml_plot_eta_enabled:
+                dml_eps_data, dml_fixed_eps_results = get_dml_eval_scan_dataset_data(
+                    data,
+                    eval_config,
+                    config,
+                    include_fixed_eps=True,
+                )
+            else:
+                dml_eps_data = get_dml_eval_scan_dataset_data(data, eval_config, config)
+            plot_walkthrough_eff_vs_cutoff(
                 dml_eps_data,
+                eval_config,
+            )
+
+        if dml_plot_eff_fixed_eps_enabled or dml_plot_eta_enabled:
+            if dml_fixed_eps_results is None:
+                dml_fixed_eps_results = get_dml_fixed_eps_eval_data(
+                    data,
+                    eval_config,
+                    config,
+                )
+            (
+                dml_fixed_eps_data,
                 dml_particles_pt_hist,
                 dml_matched_target_particles_pt_hist,
                 dml_particles_eta_hist,
                 dml_matched_target_particles_eta_hist,
                 dml_pt_bins,
                 dml_eta_bins,
-            ) = get_dml_eval_scan_data(dml_graph, eval_config, config)
-
-            if dml_plot_eff_vs_eps_enabled:
-                plot_walkthrough_eff_vs_cutoff(
-                    dml_eps_data,
-                    eval_config,
-                )
+            ) = dml_fixed_eps_results
+            selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
             if dml_plot_eff_fixed_eps_enabled:
-                selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
                 plot_eff_fixed_eps(
                     dml_matched_target_particles_pt_hist,
                     dml_particles_pt_hist,
-                    dml_eps_data,
+                    dml_fixed_eps_data,
                     eval_config,
                     dml_pt_bins,
                     f"$p_T$ [{eval_config.get('pT_unit', 'MeV')}]",
@@ -172,11 +214,10 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                     selection_subtext=selection_subtext,
                 )
             if dml_plot_eta_enabled and dml_eta_bins is not None:
-                selection_subtext = f"Walkthrough distance cutoff (d={eval_config['eps']})"
                 plot_eff_fixed_eps(
                     dml_matched_target_particles_eta_hist,
                     dml_particles_eta_hist,
-                    dml_eps_data,
+                    dml_fixed_eps_data,
                     eval_config,
                     dml_eta_bins,
                     r"$\eta$",
@@ -252,8 +293,11 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
                         matched_target_particles_eta_hist += matched_target_particles_eta_hist_i
 
             if plot_computing_time_enabled:
+                num_nodes = event["num_nodes"]
+                if hasattr(num_nodes, "cpu"):
+                    num_nodes = num_nodes.cpu()
                 time_data = pd.concat([time_data, pd.DataFrame({
-                    "num_nodes": [event["num_nodes"].cpu()],
+                    "num_nodes": [num_nodes],
                     "eggnet": [event["BaseModule.forward"]],
                     "knn": [event[f"{config.get('knn_algorithm', 'cu_knn')}.get_graph"]],
                     "dbscan": [event["cluster"]],
@@ -285,13 +329,14 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, slurm)
             plot_computing_time(time_data, eval_config)
 
 
-def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset):
+def eval_slurm(config_file, eval_config_file, output_dir, accelerator, dataset, max_events):
 
     command = (
         (f"eggnet eval {config_file} {eval_config_file}") +
         (f" --output_dir {output_dir}" if output_dir else "") +
         (f" --accelerator {accelerator}" if accelerator else "") +
-        (f" --dataset {dataset}" if dataset else "")
+        (f" --dataset {dataset}" if dataset else "") +
+        (f" --max-events {max_events}" if max_events else "")
     )
 
     submit_to_slurm(command, accelerator, 1, 1, gpu_memory=40)

@@ -56,6 +56,7 @@ def infer(**kwargs):
 @click.option("--output_dir", "-o", default=None, help="Directory with the inference data and where to save the evaluation plots. Default to the same output_dir as in training_config if not specified.")
 @click.option("--accelerator", "-a", default="cuda", type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default is cuda. Note: currently only supports cuda")
 @click.option("--dataset", "-d", default="valset", type=click.Choice(["trainset", "valset", "testset"]), help="Specify a dataset to run inference. Default is valset.")
+@click.option("--max-events", "max_events", default=None, type=click.IntRange(min=1), help="Limit eval to the first N files from the selected dataset.")
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def eval(**kwargs):
     from . import eval_stage
