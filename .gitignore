@@ -172,3 +172,4 @@ logs/
 
 # yaml
 *.yaml
+.gitignore
