@@ -159,9 +159,9 @@ def apply_hard_cuts(event, hparams, stage):
             hard_cut_finished != NodeCountStatus.GOOD
             and phi_width_high - phi_width_low >= graph_adjustment_tol
         ):
-            hard_cuts = hparams.get(
-                "hard_cuts", {}
-            )  # TODO: Is this needed in the loop?
+            # Normalize null/omitted hard cuts to an empty dict so phi-based
+            # segmentation can still inject a runtime hit_phi window.
+            hard_cuts = dict(hparams.get("hard_cuts") or {})
 
             phi_low = phi_mid - phi_width / 2
             phi_high = phi_mid + phi_width / 2
