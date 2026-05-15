@@ -6,6 +6,7 @@ import click
 import matplotlib.pyplot as plt
 import numpy as np
 from atlasify import atlasify
+from matplotlib import font_manager
 
 from eggnet.utils.plotting import _get_base_subtext
 
@@ -22,6 +23,13 @@ DEFAULT_STYLES = (
         "linestyle": "--",
     },
 )
+
+PREFERRED_METRICS_FONTS = ("Helvetica", "Arial", "DejaVu Sans")
+METRICS_FONT_SIZE = 9
+METRICS_X = 0.03
+METRICS_Y_BOTTOM = 0.03
+METRICS_Y_TOP = 0.78
+METRICS_BOX_PADDING = 0.015
 
 
 def _load_json(path):
@@ -90,30 +98,99 @@ def _plot_one_overlay(ax, plot_a, plot_b, label_a, label_b, style_a, style_b):
         ax.set_xscale("log")
 
 
-def _metrics_text(plot_payload):
+def _metrics_text(plot_payload, label):
     metrics = plot_payload["fixed_eps_metrics"]
     return (
-        f"Efficiency: {metrics['eff'] :.4f}\n"
-        f"Duplication rate: {metrics['dup'] :.4f}\n"
-        f"Fake rate: {metrics['fak'] :.4f}\n"
+        f"{label}: "
+        f"eff={metrics['eff']:.4f}, "
+        f"dup={metrics['dup']:.4f}, "
+        f"fake={metrics['fak']:.4f}"
     )
 
 
-def _atlas_subtext(payload, plot_payload, label_a, label_b, plot_b):
+def _atlas_subtext(payload, plot_payload):
     source = payload.get("source", {})
     eval_config = {
         "trackML_data": bool(source.get("trackML_data", False)),
     }
     base_subtext = _get_base_subtext(eval_config)
     selection_subtext = plot_payload.get("selection_subtext", "")
-    return (
-        base_subtext
-        + selection_subtext
-        + "\n"
-        + f"{label_a}\n"
-        + _metrics_text(plot_payload)
-        + f"{label_b}\n"
-        + _metrics_text(plot_b)
+    return base_subtext + selection_subtext
+
+
+def _draw_metrics_text(fig, label_a, plot_a, label_b, plot_b):
+    metrics_text = _metrics_text(plot_a, label_a) + "\n" + _metrics_text(plot_b, label_b)
+    available_fonts = {font.name for font in font_manager.fontManager.ttflist}
+    metrics_font_family = next(
+        (font_name for font_name in PREFERRED_METRICS_FONTS if font_name in available_fonts),
+        "sans-serif",
+    )
+
+    axes = fig.axes[0]
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    candidate_positions = (
+        (METRICS_X, METRICS_Y_BOTTOM, "bottom"),
+        (METRICS_X, METRICS_Y_TOP, "top"),
+    )
+
+    def _metrics_box_score(candidate):
+        x_pos, y_pos, vertical_alignment = candidate
+        probe_text = axes.text(
+            x_pos,
+            y_pos,
+            metrics_text,
+            ha="left",
+            va=vertical_alignment,
+            fontsize=METRICS_FONT_SIZE,
+            fontfamily=metrics_font_family,
+            linespacing=1.25,
+            transform=axes.transAxes,
+            alpha=0.0,
+        )
+        bbox_display = probe_text.get_window_extent(renderer=renderer)
+        probe_text.remove()
+
+        bbox_axes = axes.transAxes.inverted().transform(bbox_display.get_points())
+        (x0, y0), (x1, y1) = bbox_axes
+        x0 -= METRICS_BOX_PADDING
+        y0 -= METRICS_BOX_PADDING
+        x1 += METRICS_BOX_PADDING
+        y1 += METRICS_BOX_PADDING
+
+        plot_points = []
+        for plot_payload in (plot_a, plot_b):
+            x_vals = np.asarray(plot_payload["bin_centers"], dtype=np.float64)
+            y_vals = np.asarray(plot_payload["efficiency"], dtype=np.float64)
+            plot_points.append(np.column_stack((x_vals, y_vals)))
+        plot_points = np.vstack(plot_points)
+        plot_points_axes = axes.transAxes.inverted().transform(
+            axes.transData.transform(plot_points)
+        )
+
+        x_dist = np.maximum(np.maximum(x0 - plot_points_axes[:, 0], 0.0), plot_points_axes[:, 0] - x1)
+        y_dist = np.maximum(np.maximum(y0 - plot_points_axes[:, 1], 0.0), plot_points_axes[:, 1] - y1)
+        distances = np.sqrt(x_dist**2 + y_dist**2)
+        overlaps = int(np.count_nonzero(distances == 0.0))
+        min_distance = float(distances.min())
+        mean_distance = float(distances.mean())
+        return (overlaps == 0, min_distance, mean_distance)
+
+    x_pos, y_pos, vertical_alignment = max(
+        candidate_positions,
+        key=_metrics_box_score,
+    )
+
+    axes.text(
+        x_pos,
+        y_pos,
+        metrics_text,
+        ha="left",
+        va=vertical_alignment,
+        fontsize=METRICS_FONT_SIZE,
+        fontfamily=metrics_font_family,
+        linespacing=1.25,
+        transform=axes.transAxes,
     )
 
 
@@ -173,7 +250,7 @@ def overlay_efficiency_plot_data(
         plt.sca(ax)
         atlasify(
             atlas=True if payload_a.get("source", {}).get("trackML_data") else "Internal",
-            subtext=_atlas_subtext(payload_a, plot_a, label_a, label_b, plot_b),
+            subtext=_atlas_subtext(payload_a, plot_a),
         )
 
         if title:
@@ -181,6 +258,8 @@ def overlay_efficiency_plot_data(
             fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.97))
         else:
             fig.tight_layout()
+
+        _draw_metrics_text(fig, label_a, plot_a, label_b, plot_b)
 
         plot_output_path = _output_path_for_plot_key(
             output_path,

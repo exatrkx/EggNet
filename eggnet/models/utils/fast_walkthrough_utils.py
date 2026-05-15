@@ -483,7 +483,7 @@ def find_most_likely_local_path(complete_paths, complete_branching_scores):
 
 
 @njit
-def process_sorted_nodes(sorted_hit_ids, numba_edges, allow_node_reuse, mode):
+def process_sorted_nodes_enumerating(sorted_hit_ids, numba_edges, allow_node_reuse, mode):
     tracks = List()
     used_nodes = Dict.empty(key_type=types.int64, value_type=types.boolean)
     for hit_id in sorted_hit_ids:
@@ -511,7 +511,19 @@ def process_sorted_nodes(sorted_hit_ids, numba_edges, allow_node_reuse, mode):
 
 def get_tracks(numba_edges, sorted_hit_ids, allow_node_reuse, mode):
     numba_sorted_hit_ids = List(sorted_hit_ids)
-    tracks = process_sorted_nodes(numba_sorted_hit_ids, numba_edges, allow_node_reuse, mode)
+    if mode == 0:
+        tracks = process_sorted_nodes_mode0(
+            numba_sorted_hit_ids,
+            numba_edges,
+            allow_node_reuse,
+        )
+    else:
+        tracks = process_sorted_nodes_enumerating(
+            numba_sorted_hit_ids,
+            numba_edges,
+            allow_node_reuse,
+            mode,
+        )
     return tracks
 
 
@@ -579,6 +591,243 @@ def find_paths(start_node, edges, used_nodes, allow_node_reuse, mode):
 
 inner_dict_type = types.DictType(types.int64, types.float64)
 outer_dict_type = types.DictType(types.int64, inner_dict_type)
+bool_inner_dict_type = types.DictType(types.int64, types.boolean)
+track_list_type = types.ListType(types.int64)
+
+
+@njit
+def build_node_positions(sorted_hit_ids):
+    node_positions = Dict.empty(key_type=types.int64, value_type=types.int64)
+    for idx in range(len(sorted_hit_ids)):
+        node_positions[sorted_hit_ids[idx]] = idx
+    return node_positions
+
+
+@njit
+def build_reverse_edges(numba_edges):
+    reverse_edges = Dict.empty(key_type=types.int64, value_type=bool_inner_dict_type)
+
+    for src in numba_edges:
+        if src not in reverse_edges:
+            reverse_edges[src] = Dict.empty(
+                key_type=types.int64, value_type=types.boolean
+            )
+        for dst in numba_edges[src]:
+            if dst not in reverse_edges:
+                reverse_edges[dst] = Dict.empty(
+                    key_type=types.int64, value_type=types.boolean
+                )
+            reverse_edges[dst][src] = True
+
+    return reverse_edges
+
+
+@njit
+def recompute_mode0_best_path(
+    node,
+    numba_edges,
+    node_positions,
+    best_lengths,
+    best_next,
+    used_nodes,
+):
+    node_idx = node_positions[node]
+    if used_nodes[node_idx]:
+        best_lengths[node_idx] = 0
+        best_next[node_idx] = -1
+        return False
+
+    new_best_length = 1
+    new_best_child = -1
+
+    if node in numba_edges:
+        for child in numba_edges[node]:
+            child_idx = node_positions[child]
+            if used_nodes[child_idx]:
+                continue
+            candidate_length = 1 + best_lengths[child_idx]
+            if candidate_length > new_best_length:
+                new_best_length = candidate_length
+                new_best_child = child
+
+    changed = (
+        new_best_length != best_lengths[node_idx]
+        or new_best_child != best_next[node_idx]
+    )
+    best_lengths[node_idx] = new_best_length
+    best_next[node_idx] = new_best_child
+    return changed
+
+
+@njit
+def initialize_mode0_best_paths(
+    sorted_hit_ids,
+    numba_edges,
+    node_positions,
+):
+    n_nodes = len(sorted_hit_ids)
+    best_lengths = np.ones(n_nodes, dtype=np.int64)
+    best_next = np.full(n_nodes, -1, dtype=np.int64)
+
+    for idx in range(n_nodes - 1, -1, -1):
+        node = sorted_hit_ids[idx]
+        if node not in numba_edges:
+            continue
+
+        best_length = 1
+        best_child = -1
+        for child in numba_edges[node]:
+            child_idx = node_positions[child]
+            candidate_length = 1 + best_lengths[child_idx]
+            if candidate_length > best_length:
+                best_length = candidate_length
+                best_child = child
+
+        best_lengths[idx] = best_length
+        best_next[idx] = best_child
+
+    return best_lengths, best_next
+
+
+@njit
+def extract_mode0_path(start_node, node_positions, best_next, allow_node_reuse, used_nodes):
+    path = List.empty_list(types.int64)
+    current_node = start_node
+
+    while True:
+        current_idx = node_positions[current_node]
+        if not allow_node_reuse and used_nodes[current_idx]:
+            break
+
+        path.append(current_node)
+        next_node = best_next[current_idx]
+        if next_node < 0:
+            break
+
+        if not allow_node_reuse:
+            next_idx = node_positions[next_node]
+            if used_nodes[next_idx]:
+                break
+
+        current_node = next_node
+
+    return path
+
+
+@njit
+def update_mode0_best_paths_after_path(
+    path,
+    reverse_edges,
+    numba_edges,
+    node_positions,
+    best_lengths,
+    best_next,
+    used_nodes,
+):
+    queue = List.empty_list(types.int64)
+    in_queue = np.zeros(len(best_lengths), dtype=np.bool_)
+
+    for node in path:
+        node_idx = node_positions[node]
+        used_nodes[node_idx] = True
+        best_lengths[node_idx] = 0
+        best_next[node_idx] = -1
+
+        if node not in reverse_edges:
+            continue
+        for predecessor in reverse_edges[node]:
+            predecessor_idx = node_positions[predecessor]
+            if used_nodes[predecessor_idx] or in_queue[predecessor_idx]:
+                continue
+            queue.append(predecessor)
+            in_queue[predecessor_idx] = True
+
+    while len(queue) > 0:
+        node = queue.pop()
+        node_idx = node_positions[node]
+        in_queue[node_idx] = False
+
+        if used_nodes[node_idx]:
+            continue
+
+        if not recompute_mode0_best_path(
+            node,
+            numba_edges,
+            node_positions,
+            best_lengths,
+            best_next,
+            used_nodes,
+        ):
+            continue
+
+        if node not in reverse_edges:
+            continue
+        for predecessor in reverse_edges[node]:
+            predecessor_idx = node_positions[predecessor]
+            if used_nodes[predecessor_idx] or in_queue[predecessor_idx]:
+                continue
+            queue.append(predecessor)
+            in_queue[predecessor_idx] = True
+
+
+@njit
+def process_sorted_nodes_mode0(sorted_hit_ids, numba_edges, allow_node_reuse):
+    # Mode 0 only needs one deterministic longest continuation per start node,
+    # so keep per-node best-next pointers instead of enumerating all full paths.
+    tracks = List.empty_list(track_list_type)
+    node_positions = build_node_positions(sorted_hit_ids)
+    best_lengths, best_next = initialize_mode0_best_paths(
+        sorted_hit_ids,
+        numba_edges,
+        node_positions,
+    )
+    used_nodes = np.zeros(len(sorted_hit_ids), dtype=np.bool_)
+
+    if allow_node_reuse:
+        for hit_id in sorted_hit_ids:
+            hit_idx = node_positions[hit_id]
+            if used_nodes[hit_idx]:
+                continue
+
+            resolved_path = extract_mode0_path(
+                hit_id,
+                node_positions,
+                best_next,
+                allow_node_reuse=True,
+                used_nodes=used_nodes,
+            )
+            if len(resolved_path) > 1:
+                tracks.append(resolved_path)
+                for node in resolved_path:
+                    used_nodes[node_positions[node]] = True
+        return tracks
+
+    reverse_edges = build_reverse_edges(numba_edges)
+    for hit_id in sorted_hit_ids:
+        hit_idx = node_positions[hit_id]
+        if used_nodes[hit_idx]:
+            continue
+
+        resolved_path = extract_mode0_path(
+            hit_id,
+            node_positions,
+            best_next,
+            allow_node_reuse=False,
+            used_nodes=used_nodes,
+        )
+        if len(resolved_path) > 1:
+            tracks.append(resolved_path)
+            update_mode0_best_paths_after_path(
+                resolved_path,
+                reverse_edges,
+                numba_edges,
+                node_positions,
+                best_lengths,
+                best_next,
+                used_nodes,
+            )
+
+    return tracks
 
 
 @njit
