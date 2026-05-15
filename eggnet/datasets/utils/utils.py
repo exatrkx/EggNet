@@ -20,7 +20,9 @@ def load_datafiles_in_dir(input_dir, data_name=None, data_num=None):
     if data_name is not None:
         input_dir = os.path.join(input_dir, data_name)
 
-    data_files = [str(path) for path in Path(input_dir).rglob("*.pyg")][:data_num]
+    data_files = sorted(str(path) for path in Path(input_dir).rglob("*.pyg"))
+    if data_num is not None:
+        data_files = data_files[:data_num]
     if len(data_files) == 0:
         warnings.warn(f"No data files found in {input_dir}")
     # if data_num is not None:
@@ -57,12 +59,29 @@ def handle_hard_node_cuts(
     Given set of cut config, remove nodes that do not pass the cuts.
     Remap the track_edges to the new node list.
     """
-    node_like_feature = [
-        event[feature] for feature in event.keys() if get_variable_type(feature) == VariableType.NODE_LIKE
-    ][0]
-    for n in node_like_feature:
-        assert (isinstance(n, torch.Tensor)), f"{n} \n is not a torch.Tensor, instead got {type(n)}"
-    node_mask = torch.ones_like(node_like_feature, dtype=torch.bool)
+    node_like_features = [
+        event[feature]
+        for feature in event.keys()
+        if (
+            isinstance(event[feature], torch.Tensor)
+            and get_variable_type(feature) == VariableType.NODE_LIKE
+        )
+    ]
+    assert node_like_features, "No node-like tensor features found in event"
+
+    num_nodes = int(event.num_nodes)
+    reference_feature = next(
+        (
+            feature
+            for feature in node_like_features
+            if feature.ndim > 0 and feature.shape[0] == num_nodes
+        ),
+        None,
+    )
+    assert (
+        reference_feature is not None
+    ), f"No node-like tensor matched num_nodes={num_nodes}"
+    node_mask = torch.ones(num_nodes, dtype=torch.bool, device=reference_feature.device)
 
     # TODO: Refactor this to simply trim the true tracks and check which nodes are in the true tracks
     for condition_key, condition_val in hard_cuts_config.items():
@@ -76,10 +95,10 @@ def handle_hard_node_cuts(
             output_type=VariableType.NODE_LIKE,
             input_type=get_variable_type(condition_key),
             track_edges=event.track_edges,
-            num_nodes=node_like_feature.shape[0],
+            num_nodes=num_nodes,
             num_track_edges=event.track_edges.shape[1],
         )
-        node_mask = node_mask * node_val_mask
+        node_mask = node_mask & node_val_mask
 
     if node_mask.sum() < min_nodes:
         return NodeCountStatus.UNDER

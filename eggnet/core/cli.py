@@ -36,6 +36,7 @@ def train(**kwargs):
 )
 @click.option("--output_dir", "-o", default=None, help="Directory to save the output pyg files. Default to the same output_dir as in training_config if not specified.")
 @click.option("--dataset", "-d", default=None, multiple=True, type=click.Choice(["trainset", "valset", "testset"]), help="Which dataset to run inference. Default is all datasets. Can specify one dataset or multiple.")
+@click.option("--max-events", default=None, type=click.IntRange(min=1), help="Limit inference to the first N events from each selected dataset.")
 @click.option("--accelerator", "-a", default=None, type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default will be what is specified in the training config.")
 @click.option("--devices", "-dv", default=None, type=int, help="Number of devices. Default will be what is specified in the training config.")
 @click.option("--num_nodes", "-n", default=None, type=int, help="Number of nodes. Default will be what is specified in the training config.")
@@ -56,7 +57,7 @@ def infer(**kwargs):
 @click.option("--output_dir", "-o", default=None, help="Directory with the inference data and where to save the evaluation plots. Default to the same output_dir as in training_config if not specified.")
 @click.option("--accelerator", "-a", default="cuda", type=click.Choice(["cuda", "cpu"]), help="Which device to use. Default is cuda. Note: currently only supports cuda")
 @click.option("--dataset", "-d", default="valset", type=click.Choice(["trainset", "valset", "testset"]), help="Specify a dataset to run inference. Default is valset.")
-@click.option("--max-events", "max_events", default=None, type=click.IntRange(min=1), help="Limit eval to the first N files from the selected dataset.")
+@click.option("--max-events", "max_events", default=None, type=click.IntRange(min=1), help="Limit eval to the first N events from the selected dataset.")
 @click.option("--slurm", "-s", is_flag=True, type=bool, help="Submit to slurm batch.")
 def eval(**kwargs):
     from . import eval_stage
@@ -93,7 +94,6 @@ def profile(**kwargs):
     from eggnet.tools.profile_viewer import run_profile_viewer
 
     return run_profile_viewer(**kwargs)
-
 
 if __name__ == "__main__":
     cli()

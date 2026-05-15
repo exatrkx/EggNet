@@ -6,6 +6,21 @@ from eggnet import lightning_modules
 from eggnet.utils.loading import get_stage_module, get_trainer
 from eggnet.utils.slurm import submit_to_slurm
 
+# hyperparamers that we wish to override with the YAML file
+_RUNTIME_TRAINING_HPARAM_KEYS = (
+    "input_dir",
+    "data_split",
+    "phi_segmented",
+    "graph_fraction",
+    "graph_adjustment_tol",
+    "min_nodes",
+    "max_nodes",
+    "graph_fraction_adjustment_method",
+    "max_possible_width",
+    "num_workers",
+    "max_epochs",
+)
+
 
 def _validate_cuda_training_config(config, config_file, slurm):
     accelerator = config.get("accelerator")
@@ -19,6 +34,17 @@ def _validate_cuda_training_config(config, config_file, slurm):
             "eggnet train requires a visible CUDA device for local runs. "
             "Launch from a GPU node or submit with `--slurm`."
         )
+
+
+def _apply_runtime_training_overrides(base_model, config):
+    """Use training-time runtime settings instead of checkpoint defaults."""
+    for key in _RUNTIME_TRAINING_HPARAM_KEYS:
+        if key in config:
+            base_model._hparams[key] = config[key]
+
+    # Treat the training config as authoritative for hard cuts so that
+    # removing or nulling the key disables checkpoint-time filtering.
+    base_model._hparams["hard_cuts"] = config.get("hard_cuts")
 
 
 def train(
@@ -43,6 +69,7 @@ def train(
         checkpoint_path=checkpoint,
         checkpoint_resume_dir=checkpoint_resume_dir,
     )
+    _apply_runtime_training_overrides(base_model, config)
     trainer = get_trainer(config, default_root_dir)
     if load_only_model_parameters:
         trainer.fit(base_model)

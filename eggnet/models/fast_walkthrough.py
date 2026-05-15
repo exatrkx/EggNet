@@ -16,6 +16,8 @@ import logging
 import os
 import __main__
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from multiprocessing import current_process
 from multiprocessing import get_context
 from time import perf_counter
 
@@ -35,9 +37,36 @@ from eggnet.utils.timing import add_profile_time, profile_section, set_profile_m
 
 
 def _debug_print(hparams, message):
-    """Print a debug message when track-building debug is enabled."""
-    if hparams.get("track_build_debug", False):
-        print(f"[FastWalkthrough] {message}", flush=True)
+    """Write a debug message to the walkthrough debug log when enabled."""
+    if not hparams.get("track_build_debug", False):
+        return
+
+    log_path = hparams.get("track_build_debug_log")
+    if not log_path:
+        log_dir = (
+            hparams.get("stage_dir")
+            or hparams.get("walkthrough_output_dir")
+            or hparams.get("output_dir")
+            or os.getcwd()
+        )
+        log_path = os.path.join(log_dir, "fast_walkthrough_debug.log")
+
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"{timestamp} [FastWalkthrough pid={os.getpid()}] {message}\n")
+
+
+def _graph_size_summary(graph):
+    """Return a compact node/edge summary for debug logging."""
+    num_nodes = int(getattr(graph, "num_nodes", 0))
+    edge_index = getattr(graph, "edge_index", None)
+    num_edges = (
+        int(edge_index.shape[1])
+        if edge_index is not None and hasattr(edge_index, "shape") and len(edge_index.shape) >= 2
+        else 0
+    )
+    return f"nodes={num_nodes} edges={num_edges}"
 
 
 def _format_profile_summary(profile):
@@ -109,6 +138,45 @@ def _walkthrough_output_path(output_dir, event_name):
 _FAST_WALKTHROUGH_WORKER = None
 
 
+def _get_worker_index():
+    """Best-effort stable worker index for process-pool children."""
+    process = current_process()
+    identity = getattr(process, "_identity", None)
+    if identity:
+        return max(int(identity[0]) - 1, 0)
+
+    name = getattr(process, "name", "")
+    if "-" in name:
+        suffix = name.rsplit("-", 1)[-1]
+        if suffix.isdigit():
+            return max(int(suffix) - 1, 0)
+
+    return os.getpid()
+
+
+def _assign_worker_cuda_device(hparams):
+    """Pin each walkthrough worker to one visible CUDA device."""
+    if not torch.cuda.is_available():
+        return None
+
+    visible_device_count = torch.cuda.device_count()
+    if visible_device_count <= 0:
+        return None
+
+    configured_devices = hparams.get("walkthrough_cuda_devices")
+    if configured_devices is None:
+        candidate_devices = list(range(visible_device_count))
+    else:
+        candidate_devices = [int(device) for device in configured_devices]
+        if not candidate_devices:
+            return None
+
+    worker_index = _get_worker_index()
+    device_index = candidate_devices[worker_index % len(candidate_devices)]
+    torch.cuda.set_device(device_index)
+    return device_index
+
+
 def _configure_track_build_worker():
     torch.set_num_threads(1)
     if hasattr(torch, "set_num_interop_threads"):
@@ -124,7 +192,15 @@ def _configure_track_build_worker():
 def _init_fast_walkthrough_worker(hparams):
     global _FAST_WALKTHROUGH_WORKER
     _configure_track_build_worker()
+    assigned_device = _assign_worker_cuda_device(hparams)
+    _debug_print(
+        hparams,
+        "worker_init "
+        f"pid={os.getpid()} worker_index={_get_worker_index()} "
+        f"cuda_device={assigned_device}",
+    )
     _FAST_WALKTHROUGH_WORKER = FastWalkthrough(hparams)
+    _FAST_WALKTHROUGH_WORKER.assigned_cuda_device = assigned_device
     _FAST_WALKTHROUGH_WORKER.eval()
 
 
@@ -210,6 +286,15 @@ class FastWalkthrough(nn.Module):
             "enable_structural_profile_metadata",
             False,
         )
+        self.gpu_available = torch.cuda.is_available()
+
+    def _get_graph_for_initial_edge_index(self, graph):
+        """Use CUDA embeddings for the initial neighbor search when available."""
+        if graph.src_embedding.device.type == "cuda":
+            return graph
+        if not self.gpu_available:
+            return graph
+        return graph.to("cuda", non_blocking=True)
 
     def _get_initial_edge_index(self, graph):
         """Recover initial candidate edges with an FRNN-style radius query."""
@@ -242,8 +327,16 @@ class FastWalkthrough(nn.Module):
         """Build tracks for a single event graph."""
         event_id = graph.event_id[0] if hasattr(graph, "event_id") else "unknown"
         start_time = perf_counter()
+        debug_enabled = bool(self.hparams.get("track_build_debug", False))
         save_walkthrough_diagnostics = bool(
             self.hparams.get("save_walkthrough_diagnostics", False)
+        )
+        _debug_print(
+            self.hparams,
+            "event_start "
+            f"id={event_id} pid={os.getpid()} "
+            f"device={getattr(getattr(graph, 'hit_id', None), 'device', 'unknown')} "
+            f"{_graph_size_summary(graph)}",
         )
         if self.enable_profiling:
             _record_graph_profile_metadata(
@@ -262,6 +355,17 @@ class FastWalkthrough(nn.Module):
             self.hparams.get("initial_edge_max_neighbors", 64)
         )
         initial_edge_backend = self.hparams.get("initial_edge_backend", "FRNN")
+        graph_move_start = perf_counter()
+        graph_for_initial_edges = self._get_graph_for_initial_edge_index(graph)
+        if debug_enabled:
+            _debug_print(
+                self.hparams,
+                "stage=prepare_initial_edge_index "
+                f"event={event_id} time={perf_counter() - graph_move_start:.3f}s "
+                f"device={graph_for_initial_edges.src_embedding.device} "
+                f"{_graph_size_summary(graph_for_initial_edges)}",
+            )
+        initial_edge_start = perf_counter()
         with profile_section(
             graph,
             "fast_walkthrough.initial_edge_index",
@@ -283,21 +387,44 @@ class FastWalkthrough(nn.Module):
                     "fast_walkthrough.initial_edge_index.backend",
                     initial_edge_backend,
                 )
-            edge_index = self._get_initial_edge_index(graph)
+            edge_index = self._get_initial_edge_index(graph_for_initial_edges)
+        if debug_enabled:
+            num_initial_edges = int(edge_index.shape[1]) if edge_index.ndim >= 2 else 0
+            _debug_print(
+                self.hparams,
+                "stage=initial_edge_index "
+                f"event={event_id} time={perf_counter() - initial_edge_start:.3f}s "
+                f"edges={num_initial_edges} backend={initial_edge_backend} "
+                f"radius={initial_edge_radius} k={initial_edge_max_neighbors}",
+            )
         if self.enable_profiling:
             set_profile_metadata(
                 graph,
                 "fast_walkthrough.initial_edge_index.num_edges",
                 int(edge_index.shape[1]),
             )
+        filter_start = perf_counter()
         with profile_section(
             graph,
             "fast_walkthrough.filter_graph",
             enabled=self.enable_profiling,
         ):
             filtered_graph = fast_walkthrough_utils.filter_graph(
-                graph, edge_index, inverted_score_name, inverted_threshold
+                graph_for_initial_edges,
+                edge_index,
+                inverted_score_name,
+                inverted_threshold,
             )
+        if debug_enabled:
+            _debug_print(
+                self.hparams,
+                "stage=filter_graph "
+                f"event={event_id} time={perf_counter() - filter_start:.3f}s "
+                f"{_graph_size_summary(filtered_graph)} threshold={inverted_threshold:.4f}",
+            )
+        edge_index = edge_index.to(graph.hit_id.device)
+        if filtered_graph.hit_id.device.type != "cpu":
+            filtered_graph = filtered_graph.cpu()
         if self.enable_profiling:
             _record_graph_profile_metadata(
                 graph=filtered_graph,
@@ -305,12 +432,20 @@ class FastWalkthrough(nn.Module):
                 target=graph,
                 include_structure=self.enable_structural_profile_metadata,
             )
+        remove_cycles_start = perf_counter()
         with profile_section(
             graph,
             "fast_walkthrough.remove_cycles",
             enabled=self.enable_profiling,
         ):
             filtered_graph = cc_and_walk_utils.remove_cycles(filtered_graph)
+        if debug_enabled:
+            _debug_print(
+                self.hparams,
+                "stage=remove_cycles "
+                f"event={event_id} time={perf_counter() - remove_cycles_start:.3f}s "
+                f"{_graph_size_summary(filtered_graph)}",
+            )
         if self.enable_profiling:
             _record_graph_profile_metadata(
                 graph=filtered_graph,
@@ -322,6 +457,7 @@ class FastWalkthrough(nn.Module):
         all_trks = {}
         walk_input_graph = None
         walk_pruned_graph = None
+        simple_path_start = perf_counter()
         with profile_section(
             graph,
             "fast_walkthrough.simple_path",
@@ -332,6 +468,13 @@ class FastWalkthrough(nn.Module):
                 profile_target=graph,
                 profiling_enabled=self.enable_profiling,
                 include_structure_metadata=self.enable_structural_profile_metadata,
+            )
+        if debug_enabled:
+            _debug_print(
+                self.hparams,
+                "stage=simple_path "
+                f"event={event_id} time={perf_counter() - simple_path_start:.3f}s "
+                f"cc_tracks={len(all_trks['cc'])} {_graph_size_summary(walk_input_graph)}",
             )
         if self.enable_profiling:
             _record_graph_profile_metadata(
@@ -352,6 +495,13 @@ class FastWalkthrough(nn.Module):
                     walk_add_threshold,
                     lookback=self.hparams.get("lookback", False),
                 )
+                if debug_enabled:
+                    _debug_print(
+                        self.hparams,
+                        "stage=max_add_cuts_diagnostics "
+                        f"event={event_id} {_graph_size_summary(walk_pruned_graph)}",
+                    )
+            walk_start = perf_counter()
             with profile_section(
                 graph,
                 "fast_walkthrough.walk",
@@ -369,6 +519,14 @@ class FastWalkthrough(nn.Module):
                     profiling_enabled=self.enable_profiling,
                     include_structure_metadata=self.enable_structural_profile_metadata,
                 )
+            if debug_enabled:
+                _debug_print(
+                    self.hparams,
+                    "stage=walk "
+                    f"event={event_id} time={perf_counter() - walk_start:.3f}s "
+                    f"walk_tracks={len(all_trks['walk'])} "
+                    f"min={walk_min_threshold:.4f} add={walk_add_threshold:.4f}",
+                )
             if self.enable_profiling:
                 set_profile_metadata(
                     graph,
@@ -377,22 +535,38 @@ class FastWalkthrough(nn.Module):
                 )
 
         if self.hparams.get("save_graph", True) or save_walkthrough_diagnostics:
+            add_labels_start = perf_counter()
             with profile_section(
                 graph,
                 "fast_walkthrough.add_track_labels",
                 enabled=self.enable_profiling,
             ):
                 cc_and_walk_utils.add_track_labels(graph, all_trks)
+            if debug_enabled:
+                _debug_print(
+                    self.hparams,
+                    "stage=add_track_labels "
+                    f"event={event_id} time={perf_counter() - add_labels_start:.3f}s",
+                )
 
+        join_tracks_start = perf_counter()
         with profile_section(
             graph,
             "fast_walkthrough.join_track_lists",
             enabled=self.enable_profiling,
         ):
             tracks = cc_and_walk_utils.join_track_lists(all_trks)
+        if debug_enabled:
+            _debug_print(
+                self.hparams,
+                "stage=join_track_lists "
+                f"event={event_id} time={perf_counter() - join_tracks_start:.3f}s "
+                f"total_tracks={len(tracks)}",
+            )
         if self.hparams.get("resolve_ambiguities", False) and self.hparams.get(
             "reuse_hits", False
         ):
+            resolve_start = perf_counter()
             with profile_section(
                 graph,
                 "fast_walkthrough.resolve_ambiguities",
@@ -400,6 +574,13 @@ class FastWalkthrough(nn.Module):
             ):
                 tracks = fast_walkthrough_utils.resolve_ambiguities(
                     tracks, self.hparams.get("max_ambi_hits", 2)
+                )
+            if debug_enabled:
+                _debug_print(
+                    self.hparams,
+                    "stage=resolve_ambiguities "
+                    f"event={event_id} time={perf_counter() - resolve_start:.3f}s "
+                    f"total_tracks={len(tracks)}",
                 )
 
         graph.reco_tracks = tracks
@@ -419,6 +600,7 @@ class FastWalkthrough(nn.Module):
             )
 
         if save_walkthrough_diagnostics:
+            diagnostics_start = perf_counter()
             target_tracks = self.hparams.get("target_tracks", None)
             track_diag, particle_diag = build_track_particle_diagnostics(
                 graph,
@@ -442,14 +624,28 @@ class FastWalkthrough(nn.Module):
                     )
                 ),
             )
+            if debug_enabled:
+                _debug_print(
+                    self.hparams,
+                    "stage=walkthrough_diagnostics "
+                    f"event={event_id} time={perf_counter() - diagnostics_start:.3f}s",
+                )
 
         if self.hparams.get("save_walkthrough_graphs", True):
+            save_graph_start = perf_counter()
             with profile_section(
                 graph,
                 "fast_walkthrough.save_graph",
                 enabled=self.enable_profiling,
             ):
                 _save_graph(graph, output_dir, self.hparams)
+            if debug_enabled:
+                _debug_print(
+                    self.hparams,
+                    "stage=save_graph "
+                    f"event={event_id} time={perf_counter() - save_graph_start:.3f}s "
+                    f"path={output_dir}",
+                )
 
         profile_summary = _format_profile_summary(
             getattr(graph, "profiling", None)
@@ -468,6 +664,12 @@ class FastWalkthrough(nn.Module):
             graph = torch.load(event_path, map_location=torch.device("cpu"))
         except Exception as exc:
             raise RuntimeError(f"Failed to load event file: {event_path}") from exc
+        _debug_print(
+            self.hparams,
+            "event_load "
+            f"path={os.path.basename(event_path)} time={perf_counter() - load_start:.3f}s "
+            f"{_graph_size_summary(graph)}",
+        )
         if self.enable_profiling:
             add_profile_time(
                 graph,
@@ -516,7 +718,8 @@ class FastWalkthrough(nn.Module):
         dataset_size = len(dataset) if hasattr(dataset, "__len__") else "unknown"
         _debug_print(
             self.hparams,
-            f"split={data_name} events={dataset_size} workers={max_workers}",
+            f"split={data_name} events={dataset_size} workers={max_workers} "
+            f"backend={parallel_backend} reuse_outputs={reuse_outputs}",
         )
         print(
             "INFO: FastWalkthrough using "
@@ -559,6 +762,10 @@ class FastWalkthrough(nn.Module):
                     f"processing {len(pending_paths)} remaining.",
                     flush=True,
                 )
+                _debug_print(
+                    self.hparams,
+                    f"split={data_name} pending_paths={len(pending_paths)} skipped={skipped}",
+                )
 
             if max_workers != 1:
                 if use_process_pool:
@@ -597,7 +804,7 @@ class FastWalkthrough(nn.Module):
                             flush=True,
                         )
                         _terminate_process_pool(executor, futures=futures)
-                        raise
+                        os._exit(130)
                     except Exception:
                         if progress is not None:
                             progress.close()

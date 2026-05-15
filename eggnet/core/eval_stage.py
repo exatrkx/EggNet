@@ -133,7 +133,13 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, max_ev
         else:
             data_split[dataset_index] = max_events
         data_config["data_split"] = data_split
-        print(f"Limiting {dataset} eval to {data_split[dataset_index]} files")
+        print(f"Limiting {dataset} eval to {data_split[dataset_index]} events")
+
+    # Test-time eval loads cached inference / walkthrough graphs from output_dir.
+    # Those files already reflect any inference-time hard cuts, so reapplying
+    # them here can corrupt cached node-aligned tensors such as embeddings.
+    data_config["hard_cuts"] = None
+
     if config.get("double_metric_learning", False):
         _validate_dml_eval_config(eval_config)
         data_config["output_dir"] = _resolve_walkthrough_output_dir(

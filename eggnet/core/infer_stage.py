@@ -29,6 +29,31 @@ def _resolve_walkthrough_output_dir(config, base_output_dir):
     return os.path.join(base_output_dir, walkthrough_subdir)
 
 
+def _get_dataset_index(dataset_name):
+    return {
+        "trainset": 0,
+        "valset": 1,
+        "testset": 2,
+    }[dataset_name]
+
+
+def _apply_max_events_limit(config, datasets, max_events):
+    if max_events is None:
+        return
+
+    data_split = list(config["data_split"])
+    for dataset_name in datasets:
+        dataset_index = _get_dataset_index(dataset_name)
+        current_limit = int(data_split[dataset_index])
+        data_split[dataset_index] = (
+            min(current_limit, max_events) if current_limit > 0 else max_events
+        )
+        print(
+            f"Limiting {dataset_name} inference to {data_split[dataset_index]} events"
+        )
+    config["data_split"] = data_split
+
+
 def _apply_runtime_dataset_overrides(base_model, config):
     """Use inference-time dataset settings instead of checkpoint defaults."""
     for key in _RUNTIME_DATASET_HPARAM_KEYS:
@@ -62,11 +87,20 @@ def _resolve_runtime_execution_overrides(base_model, config, accelerator, device
     return accelerator, devices, num_nodes
 
 
+def _is_global_zero_process():
+    if not torch.distributed.is_available():
+        return True
+    if not torch.distributed.is_initialized():
+        return True
+    return torch.distributed.get_rank() == 0
+
+
 def infer(
     config_file,
     checkpoint,
     output_dir,
     dataset,
+    max_events,
     accelerator,
     devices,
     num_nodes,
@@ -80,6 +114,9 @@ def infer(
         config.get("validate_reused_inference_output", False)
     )
     use_walkthrough = bool(config.get("double_metric_learning", False))
+    dataset = list(dataset) if dataset else None
+    target_datasets = dataset or ["trainset", "valset", "testset"]
+    _apply_max_events_limit(config, target_datasets, max_events)
 
     base_model_class = getattr(lightning_modules, config.get("base_model", "NodeEncoding"))
     base_model = base_model_class.load_from_checkpoint(checkpoint)
@@ -94,7 +131,6 @@ def infer(
         devices,
         num_nodes,
     )
-    dataset = list(dataset) if dataset else None
     if dataset is not None:
         base_model._hparams["predict_datasets"] = dataset
     elif "predict_datasets" in base_model._hparams:
@@ -108,6 +144,7 @@ def infer(
             checkpoint,
             output_dir,
             dataset,
+            max_events,
             accelerator,
             devices,
             num_nodes,
@@ -144,6 +181,13 @@ def infer(
             )
 
         if use_walkthrough:
+            if not _is_global_zero_process():
+                if track_build_debug:
+                    print(
+                        "[infer] skipping walkthrough on nonzero distributed rank",
+                        flush=True,
+                    )
+                return
             walkthrough_output_dir = _resolve_walkthrough_output_dir(
                 config,
                 base_model._hparams["output_dir"],
@@ -197,6 +241,7 @@ def infer_slurm(
     checkpoint,
     output_dir,
     dataset,
+    max_events,
     accelerator,
     devices,
     num_nodes,
@@ -210,6 +255,7 @@ def infer_slurm(
         (f"eggnet infer {config_file} -c {checkpoint}") +
         (f" --output_dir {output_dir}" if output_dir else "") +
         ("".join([f" --dataset {d}" for d in dataset]) if dataset else "") +
+        (f" --max-events {max_events}" if max_events else "") +
         (f" --accelerator {accelerator}" if accelerator else "") +
         (f" --devices {devices}" if devices else "") +
         (f" --num_nodes {num_nodes}" if num_nodes else "") +

@@ -116,6 +116,41 @@ cd configs/trackML
 eggnet eval eggnet_trackml.yaml eval_trackml.yaml
 ```
 
+## Tools
+
+### `export_efficiency_plot_data.py`
+Export fixed-`eps` efficiency plot data to JSON.
+
+```
+python eggnet/tools/export_efficiency_plot_data.py TRAINING_CONFIG EVAL_CONFIG_FILE [OPTIONS]
+```
+
+```
+python eggnet/tools/export_efficiency_plot_data.py \
+  experiment/double_metric_learning/eggnet_itk_DML.yaml \
+  experiment/double_metric_learning/eval_itk_DML.yaml \
+  --dataset valset \
+  --output_dir /path/to/experiment/double_metric_learning \
+  --output-path /path/to/efficiency_plot_data_valset.json
+```
+
+### `overlay_efficiency_plot_data.py`
+Overlay two exported efficiency JSON files into one figure.
+
+```
+python eggnet/tools/overlay_efficiency_plot_data.py JSON_A JSON_B [OPTIONS]
+```
+
+```
+python eggnet/tools/overlay_efficiency_plot_data.py \
+  /path/to/model_a.json \
+  /path/to/model_b.json \
+  --label-a "Model A" \
+  --label-b "Model B" \
+  --title "Fixed-eps Efficiency Overlay" \
+  --output-path /path/to/overlay_efficiency_plot.png
+```
+
 ## Slurm batch
 
 The program also supports slurm batch submission. Simply pass `-s` or `--slurm` to your command line. Before submitting to batch, edit the `.env` to set the correct project ID for your batch job (default is `m2616`).
