@@ -182,9 +182,15 @@ def eval(config_file, eval_config_file, output_dir, accelerator, dataset, max_ev
                     eval_config,
                     config,
                     include_fixed_eps=True,
+                    dataset_name=dataset,
                 )
             else:
-                dml_eps_data = get_dml_eval_scan_dataset_data(data, eval_config, config)
+                dml_eps_data = get_dml_eval_scan_dataset_data(
+                    data,
+                    eval_config,
+                    config,
+                    dataset_name=dataset,
+                )
             plot_walkthrough_eff_vs_cutoff(
                 dml_eps_data,
                 eval_config,

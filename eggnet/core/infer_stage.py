@@ -1,5 +1,9 @@
-import yaml
 import os
+import hashlib
+import json
+from pathlib import Path
+
+import yaml
 
 import torch
 from pytorch_lightning import Trainer
@@ -20,6 +24,31 @@ _RUNTIME_DATASET_HPARAM_KEYS = (
     "max_possible_width",
 )
 
+_INFER_METADATA_DATA_KEYS = (
+    "input_dir",
+    "phi_segmented",
+    "graph_fraction",
+    "graph_adjustment_tol",
+    "min_nodes",
+    "max_nodes",
+    "graph_fraction_adjustment_method",
+    "max_possible_width",
+    "hard_cuts",
+    "double_metric_learning",
+)
+
+_INFER_METADATA_RECONSTRUCTION_KEYS = (
+    "walkthrough_model",
+    "score_cut_cc",
+    "initial_edge_radius",
+    "score_cut_walk",
+    "cc_only",
+    "reuse_hits",
+    "walk_mode",
+    "lookback",
+    "knn_algorithm",
+)
+
 
 def _resolve_walkthrough_output_dir(config, base_output_dir):
     explicit_output_dir = config.get("walkthrough_output_dir")
@@ -27,6 +56,103 @@ def _resolve_walkthrough_output_dir(config, base_output_dir):
         return explicit_output_dir
     walkthrough_subdir = config.get("walkthrough_subdir", "walkthrough")
     return os.path.join(base_output_dir, walkthrough_subdir)
+
+
+def _safe_json_value(value):
+    if isinstance(value, dict):
+        return {str(k): _safe_json_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_json_value(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _hash_file_contents(path):
+    if path is None or not os.path.isfile(path):
+        return None
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fingerprint_path(path):
+    if path is None:
+        return None
+
+    resolved_path = os.path.realpath(path)
+    if not os.path.exists(resolved_path):
+        return {
+            "path": resolved_path,
+            "exists": False,
+        }
+
+    stat_result = os.stat(resolved_path)
+    return {
+        "path": resolved_path,
+        "exists": True,
+        "size": int(stat_result.st_size),
+        "mtime_ns": int(stat_result.st_mtime_ns),
+    }
+
+
+def _get_infer_metadata_path(walkthrough_output_dir, dataset_name):
+    return Path(walkthrough_output_dir) / f"infer_metadata_{dataset_name}.json"
+
+
+def _build_infer_metadata(config_file, checkpoint, config, dataset_name, output_dir, walkthrough_output_dir):
+    data_index = _get_dataset_index(dataset_name)
+    data_split = list(config.get("data_split", []))
+    dataset_limit = data_split[data_index] if data_index < len(data_split) else None
+
+    return {
+        "schema_version": 1,
+        "dataset_name": dataset_name,
+        "config_file": {
+            "path": os.path.realpath(config_file),
+            "sha256": _hash_file_contents(config_file),
+        },
+        "checkpoint": _fingerprint_path(checkpoint),
+        "output_dir": os.path.realpath(output_dir) if output_dir is not None else None,
+        "walkthrough_output_dir": os.path.realpath(walkthrough_output_dir),
+        "dataset_limit": dataset_limit,
+        "data_settings": {
+            key: _safe_json_value(config.get(key))
+            for key in _INFER_METADATA_DATA_KEYS
+            if key in config
+        },
+        "reconstruction_settings": {
+            key: _safe_json_value(config.get(key))
+            for key in _INFER_METADATA_RECONSTRUCTION_KEYS
+            if key in config
+        },
+    }
+
+
+def _write_infer_metadata(config_file, checkpoint, config, dataset_name, output_dir, walkthrough_output_dir):
+    metadata_path = _get_infer_metadata_path(walkthrough_output_dir, dataset_name)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = _build_infer_metadata(
+        config_file,
+        checkpoint,
+        config,
+        dataset_name,
+        output_dir,
+        walkthrough_output_dir,
+    )
+    temp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(temp_path, metadata_path)
 
 
 def _get_dataset_index(dataset_name):
@@ -233,6 +359,14 @@ def infer(
                 if track_build_debug:
                     print(f"[infer] build_tracks {data_name}", flush=True)
                 track_builder.build_tracks(data_iterable, data_name)
+                _write_infer_metadata(
+                    config_file,
+                    checkpoint,
+                    config,
+                    data_name,
+                    base_model._hparams["output_dir"],
+                    walkthrough_output_dir,
+                )
 
 
 def infer_slurm(

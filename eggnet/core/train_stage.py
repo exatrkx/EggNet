@@ -83,7 +83,7 @@ def train_slurm(config, config_file, checkpoint, checkpoint_resume_dir, load_onl
         (f"eggnet train {config_file}") +
         (f" -c {checkpoint}" if checkpoint else "") +
         (f" --checkpoint_resume_dir {checkpoint_resume_dir}" if checkpoint_resume_dir else "") +
-        (f" --load_only_model_parameters {load_only_model_parameters}" if load_only_model_parameters else "")
+        (" --load_only_model_parameters" if load_only_model_parameters else "")
     )
     accelerator = config["accelerator"]
     devices = config["devices"]

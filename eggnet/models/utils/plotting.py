@@ -1,4 +1,8 @@
 from collections import defaultdict
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
 
 from .utils import *
 import matplotlib.pyplot as plt
@@ -17,6 +21,31 @@ from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
 
 CUTOFF_PROPORTIONS = [0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975, 0.99, 0.995, 0.999]
+
+_DML_SCAN_CACHE_DATA_KEYS = (
+    "input_dir",
+    "phi_segmented",
+    "graph_fraction",
+    "graph_adjustment_tol",
+    "min_nodes",
+    "max_nodes",
+    "graph_fraction_adjustment_method",
+    "max_possible_width",
+    "hard_cuts",
+    "double_metric_learning",
+)
+
+_DML_SCAN_CACHE_RECONSTRUCTION_KEYS = (
+    "walkthrough_model",
+    "score_cut_cc",
+    "initial_edge_radius",
+    "score_cut_walk",
+    "cc_only",
+    "reuse_hits",
+    "walk_mode",
+    "lookback",
+    "knn_algorithm",
+)
 
 
 def _build_dml_eps_values(eval_config):
@@ -149,7 +178,9 @@ def _get_walkthrough_scan_hparams(hparams: dict, cutoff: float):
     scan_hparams["save_graph"] = False
     scan_hparams["save_walkthrough_graphs"] = False
     scan_hparams["enable_profiling"] = False
-    scan_hparams["track_build_debug"] = False
+    walkthrough_output_dir = scan_hparams.get("walkthrough_output_dir")
+    if walkthrough_output_dir is not None:
+        scan_hparams["stage_dir"] = walkthrough_output_dir
     return scan_hparams
 
 
@@ -740,6 +771,7 @@ def get_dml_eval_scan_dataset_data(
     eval_config: dict,
     hparams: dict,
     include_fixed_eps: bool = False,
+    dataset_name: str = "valset",
 ):
     eps_values = _build_dml_eps_values(eval_config)
     eval_eps = float(eval_config["eps"])
@@ -780,6 +812,31 @@ def get_dml_eval_scan_dataset_data(
             "n_tracks": 0,
         }
 
+    cache_path = _get_dml_scan_cache_path(
+        hparams.get("output_dir", eval_config.get("output_dir")),
+        dataset_name,
+        hparams,
+        eval_config,
+    )
+    _ensure_dml_scan_cache_header(
+        cache_path,
+        dataset_name,
+        hparams,
+        eval_config,
+    )
+    _merge_legacy_child_dml_scan_caches(
+        cache_path,
+        dataset_name,
+        hparams,
+        eval_config,
+    )
+    cache_entries = _load_dml_scan_cache(cache_path)
+    if cache_entries:
+        print(
+            f"INFO: Loaded {len(cache_entries)} cached DML cutoff reconstructions "
+            f"from {cache_path}"
+        )
+
     dataset_size = _get_dataset_size(dataset)
     total_reconstructions = None
     if dataset_size is not None:
@@ -790,8 +847,9 @@ def get_dml_eval_scan_dataset_data(
         unit="reco",
         dynamic_ncols=True,
     ) as progress:
-        for graph in dataset:
+        for event_index, graph in enumerate(dataset):
             graph_cpu = graph.cpu()
+            event_id = _extract_event_id(graph_cpu, event_index)
             target_mask, particles = _extract_target_particles(
                 graph_cpu,
                 eval_config,
@@ -809,45 +867,92 @@ def get_dml_eval_scan_dataset_data(
                         bins=eta_bins,
                     )[0]
             for eps_value in eps_values:
-                reconstructed_graph = _get_dml_reconstructed_graph(
-                    graph_cpu,
-                    hparams,
-                    float(eps_value),
-                )
+                eps_value = float(eps_value)
                 collect_fixed_eps = include_fixed_eps and np.isclose(
-                    float(eps_value),
+                    eps_value,
                     eval_eps,
                 )
-                match_data = _match_dml_tracks(
-                    reconstructed_graph,
-                    reconstructed_graph.hit_track_labels,
-                    target_mask,
-                    include_eta=collect_fixed_eps and include_eta,
-                )
-                row = rows[float(eps_value)]
+                cache_key = (event_id, eps_value)
+                cached_entry = cache_entries.get(cache_key)
+                if cached_entry is not None and collect_fixed_eps:
+                    if not _fixed_eps_payload_matches(
+                        cached_entry.get("fixed_eps_payload"),
+                        eval_config,
+                        include_eta,
+                    ):
+                        cached_entry = None
+
+                if cached_entry is None:
+                    reconstructed_graph = _get_dml_reconstructed_graph(
+                        graph_cpu,
+                        hparams,
+                        eps_value,
+                    )
+                    match_data = _match_dml_tracks(
+                        reconstructed_graph,
+                        reconstructed_graph.hit_track_labels,
+                        target_mask,
+                        include_eta=collect_fixed_eps and include_eta,
+                    )
+                    fixed_eps_payload = None
+                    if collect_fixed_eps:
+                        matched_target_particles = match_data["matched_target_particles"]
+                        fixed_eps_payload = {
+                            "signature": _get_fixed_eps_payload_signature(
+                                eval_config,
+                                include_eta,
+                            ),
+                            "matched_target_particles_pt_hist": np.histogram(
+                                matched_target_particles[1].cpu().numpy(),
+                                bins=pt_bins,
+                            )[0].astype(np.int64).tolist(),
+                            "matched_target_particles_eta_hist": (
+                                np.histogram(
+                                    matched_target_particles[2].cpu().numpy(),
+                                    bins=eta_bins,
+                                )[0].astype(np.int64).tolist()
+                                if include_eta
+                                else None
+                            ),
+                        }
+                    cached_entry = {
+                        "event_id": event_id,
+                        "eps": eps_value,
+                        "n_particles": n_particles,
+                        "n_matched_particles": int(match_data["n_matched_particles"]),
+                        "n_matched_tracks": int(match_data["n_matched_tracks"]),
+                        "n_matched_target_particles": int(match_data["n_matched_target_particles"]),
+                        "n_matched_target_tracks": int(match_data["n_matched_target_tracks"]),
+                        "n_tracks": int(match_data["n_tracks"]),
+                        "fixed_eps_payload": fixed_eps_payload,
+                    }
+                    cache_entries[cache_key] = cached_entry
+                    _append_dml_scan_cache_entry(cache_path, cached_entry)
+
+                row = rows[eps_value]
                 row["n_particles"] += n_particles
-                row["n_matched_particles"] += int(match_data["n_matched_particles"])
-                row["n_matched_tracks"] += int(match_data["n_matched_tracks"])
-                row["n_matched_target_particles"] += int(match_data["n_matched_target_particles"])
-                row["n_matched_target_tracks"] += int(match_data["n_matched_target_tracks"])
-                row["n_tracks"] += int(match_data["n_tracks"])
+                row["n_matched_particles"] += int(cached_entry["n_matched_particles"])
+                row["n_matched_tracks"] += int(cached_entry["n_matched_tracks"])
+                row["n_matched_target_particles"] += int(cached_entry["n_matched_target_particles"])
+                row["n_matched_target_tracks"] += int(cached_entry["n_matched_target_tracks"])
+                row["n_tracks"] += int(cached_entry["n_tracks"])
                 if collect_fixed_eps:
                     fixed_eps_totals["n_particles"] += n_particles
-                    fixed_eps_totals["n_matched_particles"] += int(match_data["n_matched_particles"])
-                    fixed_eps_totals["n_matched_tracks"] += int(match_data["n_matched_tracks"])
-                    fixed_eps_totals["n_matched_target_particles"] += int(match_data["n_matched_target_particles"])
-                    fixed_eps_totals["n_matched_target_tracks"] += int(match_data["n_matched_target_tracks"])
-                    fixed_eps_totals["n_tracks"] += int(match_data["n_tracks"])
-                    matched_target_particles = match_data["matched_target_particles"]
-                    matched_target_particles_pt_hist += np.histogram(
-                        matched_target_particles[1].cpu().numpy(),
-                        bins=pt_bins,
-                    )[0]
+                    fixed_eps_totals["n_matched_particles"] += int(cached_entry["n_matched_particles"])
+                    fixed_eps_totals["n_matched_tracks"] += int(cached_entry["n_matched_tracks"])
+                    fixed_eps_totals["n_matched_target_particles"] += int(cached_entry["n_matched_target_particles"])
+                    fixed_eps_totals["n_matched_target_tracks"] += int(cached_entry["n_matched_target_tracks"])
+                    fixed_eps_totals["n_tracks"] += int(cached_entry["n_tracks"])
+                    fixed_eps_payload = cached_entry["fixed_eps_payload"]
+                    matched_target_particles_pt_hist += np.asarray(
+                        fixed_eps_payload["matched_target_particles_pt_hist"],
+                        dtype=np.int64,
+                    )
                     if include_eta:
-                        matched_target_particles_eta_hist += np.histogram(
-                            matched_target_particles[2].cpu().numpy(),
-                            bins=eta_bins,
-                        )[0]
+                        matched_target_particles_eta_hist += np.asarray(
+                            fixed_eps_payload["matched_target_particles_eta_hist"],
+                            dtype=np.int64,
+                        )
                 progress.update(1)
 
     eps_data = pd.DataFrame([rows[float(eps_value)] for eps_value in eps_values])
@@ -928,6 +1033,339 @@ def _to_output_dir_path(output_dir):
     if isinstance(output_dir, Path):
         return output_dir
     return Path(output_dir)
+
+
+def _stable_cache_value(value):
+    if isinstance(value, dict):
+        return {str(k): _stable_cache_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stable_cache_value(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _normalize_config_file_identity(config_file):
+    if not isinstance(config_file, dict):
+        return config_file
+    return {
+        "sha256": config_file.get("sha256"),
+    }
+
+
+def _normalize_checkpoint_identity(checkpoint):
+    if not isinstance(checkpoint, dict):
+        return checkpoint
+    return {
+        "path": checkpoint.get("path"),
+        "exists": checkpoint.get("exists"),
+        "size": checkpoint.get("size"),
+        "mtime_ns": checkpoint.get("mtime_ns"),
+    }
+
+
+def _get_infer_metadata_path(walkthrough_output_dir, dataset_name):
+    return Path(walkthrough_output_dir) / f"infer_metadata_{dataset_name}.json"
+
+
+def _load_infer_metadata(walkthrough_output_dir, dataset_name):
+    if walkthrough_output_dir is None:
+        return None
+
+    metadata_path = _get_infer_metadata_path(walkthrough_output_dir, dataset_name)
+    if not metadata_path.exists():
+        return None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        print(f"WARNING: Failed to load infer metadata from {metadata_path}")
+        return None
+
+
+def _normalize_infer_metadata_for_cache(metadata):
+    data_settings = metadata.get("data_settings", {})
+    if isinstance(data_settings, dict):
+        data_settings = {
+            key: value
+            for key, value in data_settings.items()
+            if key != "data_split"
+        }
+
+    return {
+        "schema_version": metadata.get("schema_version"),
+        "dataset_name": metadata.get("dataset_name"),
+        "config_file": _normalize_config_file_identity(metadata.get("config_file")),
+        "checkpoint": _normalize_checkpoint_identity(metadata.get("checkpoint")),
+        "data_settings": data_settings,
+        "reconstruction_settings": metadata.get("reconstruction_settings"),
+    }
+
+
+def _normalize_cache_identity_for_compare(identity):
+    if not isinstance(identity, dict):
+        return identity
+
+    if identity.get("source") == "infer_metadata":
+        return {
+            "source": "infer_metadata",
+            "metadata": _normalize_infer_metadata_for_cache(
+                identity.get("metadata", {})
+            ),
+        }
+
+    if identity.get("source") == "hparams_fallback":
+        return {
+            "source": "hparams_fallback",
+            "data_settings": identity.get("data_settings"),
+            "reconstruction_settings": identity.get("reconstruction_settings"),
+        }
+
+    return identity
+
+
+def _build_dml_scan_cache_identity(hparams, dataset_name):
+    walkthrough_output_dir = hparams.get("walkthrough_output_dir")
+    metadata = _load_infer_metadata(walkthrough_output_dir, dataset_name)
+    if metadata is not None:
+        return {
+            "source": "infer_metadata",
+            "metadata": _normalize_infer_metadata_for_cache(metadata),
+        }
+
+    return {
+        "source": "hparams_fallback",
+        "data_settings": {
+            key: _stable_cache_value(hparams.get(key))
+            for key in _DML_SCAN_CACHE_DATA_KEYS
+            if key in hparams
+        },
+        "reconstruction_settings": {
+            key: _stable_cache_value(hparams.get(key))
+            for key in _DML_SCAN_CACHE_RECONSTRUCTION_KEYS
+            if key in hparams
+        },
+    }
+
+
+def _get_fixed_eps_payload_signature(eval_config, include_eta):
+    return {
+        "pT_unit": eval_config.get("pT_unit", "MeV"),
+        "include_eta": bool(include_eta),
+    }
+
+
+def _fixed_eps_payload_matches(payload, eval_config, include_eta):
+    if payload is None:
+        return False
+    payload_signature = payload.get("signature")
+    if payload_signature is None:
+        return False
+    return payload_signature == _get_fixed_eps_payload_signature(eval_config, include_eta)
+
+
+def _get_dml_scan_cache_root_dir(output_dir):
+    output_dir = _to_output_dir_path(output_dir)
+    if output_dir.name.startswith("first_") and output_dir.name.endswith("_events"):
+        return output_dir.parent
+    return output_dir
+
+
+def _get_dml_scan_cache_path(
+    output_dir,
+    dataset_name,
+    hparams,
+    eval_config,
+):
+    output_dir = _get_dml_scan_cache_root_dir(output_dir)
+    cache_signature = {
+        "schema_version": 3,
+        "dataset_name": dataset_name,
+        "target_tracks": eval_config.get("target_tracks"),
+        "trackML_data": bool(eval_config.get("trackML_data", False)),
+        "identity": _build_dml_scan_cache_identity(hparams, dataset_name),
+    }
+    cache_key = hashlib.sha256(
+        json.dumps(cache_signature, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return output_dir / f"dml_cutoff_scan_cache_{dataset_name}_{cache_key}.jsonl"
+
+
+def _build_dml_scan_cache_header(cache_path, dataset_name, hparams, eval_config):
+    return {
+        "record_type": "metadata",
+        "schema_version": 1,
+        "cache_format": "dml_cutoff_scan_cache",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "cache_path": str(cache_path),
+        "dataset_name": dataset_name,
+        "shared_cache_root": str(cache_path.parent),
+        "output_dir": (
+            str(_to_output_dir_path(hparams.get("output_dir")))
+            if hparams.get("output_dir") is not None
+            else None
+        ),
+        "walkthrough_output_dir": (
+            str(_to_output_dir_path(hparams.get("walkthrough_output_dir")))
+            if hparams.get("walkthrough_output_dir") is not None
+            else None
+        ),
+        "eval_eps": float(eval_config["eps"]),
+        "eps_values": [float(value) for value in _build_dml_eps_values(eval_config)],
+        "target_tracks": eval_config.get("target_tracks"),
+        "trackML_data": bool(eval_config.get("trackML_data", False)),
+        "pT_unit": eval_config.get("pT_unit", "MeV"),
+        "cache_identity": _build_dml_scan_cache_identity(hparams, dataset_name),
+    }
+
+
+def _write_jsonl_line(file_obj, record):
+    file_obj.write(json.dumps(record, sort_keys=True))
+    file_obj.write("\n")
+
+
+def _ensure_dml_scan_cache_header(cache_path, dataset_name, hparams, eval_config):
+    header = _build_dml_scan_cache_header(
+        cache_path,
+        dataset_name,
+        hparams,
+        eval_config,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not cache_path.exists():
+        with open(cache_path, "w", encoding="utf-8") as f:
+            _write_jsonl_line(f, header)
+            f.flush()
+            os.fsync(f.fileno())
+        return
+
+    with open(cache_path, "r", encoding="utf-8") as f:
+        existing_lines = f.readlines()
+
+    first_record = None
+    for raw_line in existing_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            first_record = json.loads(line)
+        except json.JSONDecodeError:
+            first_record = None
+        break
+
+    if (
+        isinstance(first_record, dict)
+        and first_record.get("record_type") == "metadata"
+    ):
+        return
+
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        _write_jsonl_line(f, header)
+        for raw_line in existing_lines:
+            f.write(raw_line)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_path, cache_path)
+
+
+def _read_dml_scan_cache_file(cache_path):
+    header = None
+    entries = {}
+    if cache_path is None or not cache_path.exists():
+        return header, entries
+
+    with open(cache_path, "r", encoding="utf-8") as f:
+        for line_number, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(
+                    f"WARNING: Ignoring malformed DML cutoff cache entry at "
+                    f"{cache_path}:{line_number}"
+                )
+                continue
+
+            if isinstance(record, dict) and record.get("record_type") == "metadata":
+                if header is None:
+                    header = record
+                continue
+
+            if "event_id" not in record or "eps" not in record:
+                print(
+                    f"WARNING: Ignoring incomplete DML cutoff cache entry at "
+                    f"{cache_path}:{line_number}"
+                )
+                continue
+            entries[(str(record["event_id"]), float(record["eps"]))] = record
+
+    return header, entries
+
+
+def _append_dml_scan_cache_entries(cache_path, entries):
+    if not entries:
+        return
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "a", encoding="utf-8") as f:
+        for entry in entries:
+            _write_jsonl_line(f, entry)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _merge_legacy_child_dml_scan_caches(cache_path, dataset_name, hparams, eval_config):
+    shared_cache_root = cache_path.parent
+    current_identity = _normalize_cache_identity_for_compare(
+        _build_dml_scan_cache_identity(hparams, dataset_name)
+    )
+    _, shared_entries = _read_dml_scan_cache_file(cache_path)
+    missing_entries = []
+
+    for legacy_path in sorted(
+        shared_cache_root.glob(f"first_*_events/dml_cutoff_scan_cache_{dataset_name}_*.jsonl")
+    ):
+        if legacy_path == cache_path:
+            continue
+
+        legacy_header, legacy_entries = _read_dml_scan_cache_file(legacy_path)
+        if legacy_header is None:
+            continue
+
+        legacy_identity = _normalize_cache_identity_for_compare(
+            legacy_header.get("cache_identity")
+        )
+        if legacy_identity != current_identity:
+            continue
+
+        for cache_key, entry in legacy_entries.items():
+            if cache_key in shared_entries:
+                continue
+            shared_entries[cache_key] = entry
+            missing_entries.append(entry)
+
+    _append_dml_scan_cache_entries(cache_path, missing_entries)
+
+
+def _load_dml_scan_cache(cache_path):
+    _, cache_entries = _read_dml_scan_cache_file(cache_path)
+    return cache_entries
+
+
+def _append_dml_scan_cache_entry(cache_path, entry):
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, sort_keys=True))
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _save_plot_figure(fig, output_dir, filename, message):

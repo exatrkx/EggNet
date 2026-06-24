@@ -8,6 +8,108 @@ from atlasify import atlasify
 import atlasify as atl
 
 
+_PT_UNIT_SCALES = {
+    "ev": 1.0,
+    "kev": 1e3,
+    "mev": 1e6,
+    "gev": 1e9,
+    "tev": 1e12,
+}
+
+_PT_UNIT_LABELS = {
+    "ev": "eV",
+    "kev": "keV",
+    "mev": "MeV",
+    "gev": "GeV",
+    "tev": "TeV",
+}
+
+
+def _format_numeric(value):
+    return f"{float(value):g}"
+
+
+def _format_pt_value(value, unit):
+    unit_key = str(unit).lower()
+    scale = _PT_UNIT_SCALES.get(unit_key)
+    numeric_value = float(value)
+
+    if scale is None:
+        return _format_numeric(numeric_value), str(unit)
+
+    value_ev = numeric_value * scale
+    for candidate_unit in ("tev", "gev", "mev", "kev", "ev"):
+        candidate_scale = _PT_UNIT_SCALES[candidate_unit]
+        candidate_value = value_ev / candidate_scale
+        if np.isclose(candidate_value, round(candidate_value), atol=1e-12) and candidate_value >= 1.0:
+            return _format_numeric(candidate_value), _PT_UNIT_LABELS[candidate_unit]
+
+    candidate_value = value_ev / scale
+    return _format_numeric(candidate_value), _PT_UNIT_LABELS.get(unit_key, str(unit))
+
+
+def _format_pt_selection(target_tracks, pt_unit):
+    pt_cut = (target_tracks or {}).get("hit_particle_pt")
+    if not isinstance(pt_cut, list) or len(pt_cut) != 2:
+        return None
+
+    lower, upper = pt_cut
+    lower_is_finite = np.isfinite(lower)
+    upper_is_finite = np.isfinite(upper)
+
+    if lower_is_finite:
+        lower_value, lower_unit = _format_pt_value(lower, pt_unit)
+    if upper_is_finite:
+        upper_value, upper_unit = _format_pt_value(upper, pt_unit)
+
+    if lower_is_finite and upper_is_finite:
+        if lower_unit == upper_unit:
+            return rf"${lower_value} < p_T < {upper_value}$ {lower_unit}"
+        return rf"${lower_value}$ {lower_unit} $< p_T < {upper_value}$ {upper_unit}"
+    if lower_is_finite:
+        return rf"$p_T > {lower_value}$ {lower_unit}"
+    if upper_is_finite:
+        return rf"$p_T < {upper_value}$ {upper_unit}"
+    return None
+
+
+def _format_eta_selection(target_tracks):
+    eta_cut = (target_tracks or {}).get("hit_particle_eta")
+    if not isinstance(eta_cut, list) or len(eta_cut) != 2:
+        return None
+
+    lower, upper = eta_cut
+    lower_is_finite = np.isfinite(lower)
+    upper_is_finite = np.isfinite(upper)
+
+    if lower_is_finite and upper_is_finite and np.isclose(lower, -upper):
+        return rf"$|\eta| < {_format_numeric(abs(upper))}$"
+    if lower_is_finite and upper_is_finite:
+        return rf"${_format_numeric(lower)} < \eta < {_format_numeric(upper)}$"
+    if lower_is_finite:
+        return rf"$\eta > {_format_numeric(lower)}$"
+    if upper_is_finite:
+        return rf"$\eta < {_format_numeric(upper)}$"
+    return None
+
+
+def _get_target_selection_subtext(eval_config):
+    target_tracks = eval_config.get("target_tracks") or {}
+    selections = []
+
+    pt_selection = _format_pt_selection(target_tracks, eval_config.get("pT_unit", "MeV"))
+    if pt_selection is not None:
+        selections.append(pt_selection)
+
+    eta_selection = _format_eta_selection(target_tracks)
+    if eta_selection is not None:
+        selections.append(eta_selection)
+
+    if not selections:
+        return ""
+    return ", ".join(selections) + "\n"
+
+
 def _get_base_subtext(eval_config):
     if eval_config.get("trackML_data"):
         atl.ATLAS = "TrackML Dataset"
@@ -16,10 +118,10 @@ def _get_base_subtext(eval_config):
         (
             r"$\sqrt{s}=14$TeV, $t \bar{t}$, $\langle \mu \rangle = 200$, primaries"
             r" $t \bar{t}$ and soft interactions) " + "\n"
-            r"$p_T > 1$GeV, $|\eta| < 4$" + "\n"
+            + _get_target_selection_subtext(eval_config)
         )
         if not eval_config.get("trackML_data")
-        else r"$p_T > 1$GeV" + "\n"
+        else _get_target_selection_subtext(eval_config)
     )
 
 
@@ -223,10 +325,10 @@ def plot_computing_time(time_data, eval_config):
         (
             r"$\sqrt{s}=14$TeV, $t \bar{t}$, $\langle \mu \rangle = 200$, primaries"
             r" $t \bar{t}$ and soft interactions) " + "\n"
-            r"$p_T > 1$GeV, $|\eta| < 4$" + "\n"
+            + _get_target_selection_subtext(eval_config)
         )
         if not eval_config.get("trackML_data")
-        else r"$p_T > 1$GeV" + "\n"
+        else _get_target_selection_subtext(eval_config)
     )
 
     fig, ax = plt.subplots(figsize=(8, 6))

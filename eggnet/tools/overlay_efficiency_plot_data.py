@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 
 import click
 import matplotlib.pyplot as plt
@@ -41,7 +42,20 @@ def _default_label(path, payload):
     source = payload.get("source", {})
     checkpoint = source.get("checkpoint")
     if checkpoint:
-        return Path(checkpoint).stem
+        checkpoint_path = Path(checkpoint)
+        checkpoint_str = str(checkpoint_path)
+        epoch_match = re.search(r"-epoch=(\d+)", checkpoint_path.name)
+        epoch_suffix = f" ({epoch_match.group(1)} epochs)" if epoch_match else ""
+
+        if "/experiment/dml_full/" in checkpoint_str:
+            return f"DML-Full{epoch_suffix}"
+        if "/experiment/double_metric_learning/" in checkpoint_str:
+            return f"DML-HC{epoch_suffix}"
+        if "/experiment/control/full/" in checkpoint_str:
+            return f"Control-Full{epoch_suffix}"
+        if "/experiment/control/hardcut/" in checkpoint_str:
+            return f"Control-HC{epoch_suffix}"
+        return checkpoint_path.stem
     return Path(path).stem
 
 
